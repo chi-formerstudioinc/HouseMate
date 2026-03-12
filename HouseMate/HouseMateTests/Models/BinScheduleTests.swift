@@ -34,4 +34,18 @@ final class BinScheduleTests: XCTestCase {
         let twoWeeks = Calendar.current.date(byAdding: .day, value: 14, to: anchor)!
         XCTAssertEqual(schedule.rotation(for: twoWeeks), "Recycling") // weeksDiff = 2 → even → A
     }
+
+    func test_upcomingPickups_returnsRequestedCount() {
+        let schedule = makeSchedule()
+        let pickups = schedule.upcomingPickups(count: 4)
+        XCTAssertEqual(pickups.count, 4)
+    }
+
+    func test_upcomingPickups_allOnCorrectWeekday() {
+        let schedule = makeSchedule()
+        let pickups = schedule.upcomingPickups(count: 8)
+        for (date, _) in pickups {
+            XCTAssertEqual(Calendar.current.component(.weekday, from: date), 2) // Monday
+        }
+    }
 }

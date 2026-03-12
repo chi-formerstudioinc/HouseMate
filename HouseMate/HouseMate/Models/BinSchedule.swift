@@ -38,13 +38,17 @@ struct BinSchedule: Codable, Identifiable {
         let isStartingRotation = weeksDiff % 2 == 0
         if startingRotation == "A" {
             return isStartingRotation ? rotationA : rotationB
-        } else {
+        } else if startingRotation == "B" {
             return isStartingRotation ? rotationB : rotationA
+        } else {
+            assertionFailure("BinSchedule.startingRotation must be 'A' or 'B', got '\(startingRotation)'")
+            return rotationB
         }
     }
 
     /// Returns the next N pickup dates from today.
     func upcomingPickups(count: Int = 8) -> [(date: Date, rotation: String)] {
+        guard (1...7).contains(pickupDayOfWeek) else { return [] }
         let cal = Calendar.current
         let today = cal.startOfDay(for: Date())
         var results: [(Date, String)] = []
