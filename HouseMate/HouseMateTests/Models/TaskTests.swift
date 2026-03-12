@@ -23,16 +23,7 @@ final class TaskTests: XCTestCase {
           "updated_at": "2026-01-01T00:00:00Z"
         }
         """.data(using: .utf8)!
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .custom { decoder in
-            let s = try decoder.singleValueContainer().decode(String.self)
-            if let date = ISO8601DateFormatter().date(from: s) { return date }
-            let df = DateFormatter()
-            df.dateFormat = "yyyy-MM-dd"
-            if let date = df.date(from: s) { return date }
-            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "bad date: \(s)"))
-        }
-        let task = try decoder.decode(HMTask.self, from: json)
+        let task = try JSONDecoder.houseMate.decode(HMTask.self, from: json)
         XCTAssertEqual(task.title, "Take out trash")
         XCTAssertEqual(task.recurringInterval, .weekly)
         XCTAssertFalse(task.isCompleted)
@@ -40,13 +31,13 @@ final class TaskTests: XCTestCase {
 
     func test_task_nextDueDate_weekly() {
         let base = Calendar.current.date(from: DateComponents(year: 2026, month: 3, day: 1))!
-        let task = HMTask.makeTest(dueDate: base, recurringInterval: .weekly)
+        let task = HMTask.makeTest(dueDate: base, isRecurring: true, recurringInterval: .weekly)
         XCTAssertEqual(task.nextDueDate, Calendar.current.date(byAdding: .day, value: 7, to: base))
     }
 
     func test_task_nextDueDate_monthly() {
         let base = Calendar.current.date(from: DateComponents(year: 2026, month: 3, day: 1))!
-        let task = HMTask.makeTest(dueDate: base, recurringInterval: .monthly)
+        let task = HMTask.makeTest(dueDate: base, isRecurring: true, recurringInterval: .monthly)
         XCTAssertEqual(task.nextDueDate, Calendar.current.date(byAdding: .month, value: 1, to: base))
     }
 
@@ -60,5 +51,38 @@ final class TaskTests: XCTestCase {
         let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: Date())!
         let task = HMTask.makeTest(dueDate: yesterday, isCompleted: true)
         XCTAssertFalse(task.isOverdue)
+    }
+
+    func test_task_isNotOverdue_whenDueToday() {
+        let today = Calendar.current.startOfDay(for: Date())
+        let task = HMTask.makeTest(dueDate: today, isCompleted: false)
+        XCTAssertFalse(task.isOverdue)
+    }
+
+    func test_task_nextDueDate_daily() {
+        let base = Calendar.current.date(from: DateComponents(year: 2026, month: 3, day: 1))!
+        let task = HMTask.makeTest(dueDate: base, isRecurring: true, recurringInterval: .daily)
+        XCTAssertEqual(task.nextDueDate, Calendar.current.date(byAdding: .day, value: 1, to: base))
+    }
+
+    func test_task_nextDueDate_nilWhenNotRecurring() {
+        let base = Calendar.current.date(from: DateComponents(year: 2026, month: 3, day: 1))!
+        let task = HMTask.makeTest(dueDate: base, isRecurring: false, recurringInterval: .weekly)
+        XCTAssertNil(task.nextDueDate)
+    }
+
+    func test_taskCompletionLog_decodesFromJSON() throws {
+        let json = """
+        {
+          "id": "00000000-0000-0000-0000-000000000001",
+          "task_id": "00000000-0000-0000-0000-000000000002",
+          "completed_by": "00000000-0000-0000-0000-000000000003",
+          "completed_at": "2026-01-01T00:00:00Z"
+        }
+        """.data(using: .utf8)!
+        let log = try JSONDecoder.houseMate.decode(TaskCompletionLog.self, from: json)
+        XCTAssertEqual(log.taskId, UUID(uuidString: "00000000-0000-0000-0000-000000000002"))
+        XCTAssertEqual(log.completedBy, UUID(uuidString: "00000000-0000-0000-0000-000000000003"))
+        XCTAssertNotNil(log.completedAt)
     }
 }
