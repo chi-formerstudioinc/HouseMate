@@ -8,6 +8,7 @@ final class AuthService {
 
     func signUp(email: String, password: String) async throws -> User {
         let response = try await supabase.auth.signUp(email: email, password: password)
+        // In supabase-swift 2.x, AuthResponse.user is non-optional
         return response.user
     }
 

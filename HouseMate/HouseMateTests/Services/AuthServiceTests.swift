@@ -2,6 +2,8 @@
 import XCTest
 @testable import HouseMate
 
+// Note: These tests require Secrets.swift to be configured with a valid Supabase URL and anon key.
+// Copy Secrets.swift.example to Secrets.swift and fill in your project credentials before running.
 @MainActor
 final class AuthServiceTests: XCTestCase {
     func test_authService_exists() async {
