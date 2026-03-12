@@ -32,14 +32,19 @@ final class HouseholdService {
 
     func joinHousehold(inviteCode: String, displayName: String, userId: UUID) async throws -> (Household, Member) {
         // Look up invite
-        let invite: HouseholdInvite = try await supabase
-            .from("household_invites")
-            .select()
-            .eq("invite_code", value: inviteCode.uppercased())
-            .eq("is_active", value: true)
-            .single()
-            .execute()
-            .value
+        let invite: HouseholdInvite
+        do {
+            invite = try await supabase
+                .from("household_invites")
+                .select()
+                .eq("invite_code", value: inviteCode.uppercased())
+                .eq("is_active", value: true)
+                .single()
+                .execute()
+                .value
+        } catch {
+            throw HouseholdError.invalidCode
+        }
 
         // Check member count
         let memberCount: Int = try await supabase
@@ -95,6 +100,7 @@ final class HouseholdService {
             .select()
             .eq("household_id", value: householdId.uuidString)
             .eq("is_active", value: true)
+            .order("created_at", ascending: false)
             .execute()
             .value
         return invites.first?.inviteCode
@@ -106,6 +112,7 @@ final class HouseholdService {
             .from("household_invites")
             .update(InviteDeactivate(is_active: false))
             .eq("household_id", value: householdId.uuidString)
+            .eq("is_active", value: true)
             .execute()
         return try await generateNewInviteCode(householdId: householdId, userId: userId)
     }
