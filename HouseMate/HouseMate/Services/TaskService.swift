@@ -55,9 +55,11 @@ final class TaskService {
 
         guard !fresh.isCompleted else { return nil }  // already completed
 
+        let now = Date()
+
         // Insert completion log
         let log = TaskCompletionLog(
-            id: UUID(), taskId: task.id, completedBy: memberId, completedAt: Date()
+            id: UUID(), taskId: fresh.id, completedBy: memberId, completedAt: now
         )
         try await supabase.from("task_completion_logs").insert(log).execute()
 
@@ -70,7 +72,7 @@ final class TaskService {
             var completed = fresh
             completed.isCompleted = true
             completed.completedBy = memberId
-            completed.completedAt = Date()
+            completed.completedAt = now
             try await updateTask(completed)
             return completed
         }
