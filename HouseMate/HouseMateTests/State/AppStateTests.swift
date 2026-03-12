@@ -10,13 +10,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertFalse(state.isAuthenticated)
         XCTAssertNil(state.currentMember)
         XCTAssertNil(state.household)
-    }
-
-    func test_appState_isAuthenticated_whenUserSet() async {
-        let state = AppState()
-        // isAuthenticated derives from currentUser via AuthService
-        // Can't set directly; test the computed property logic
-        XCTAssertFalse(state.isAuthenticated)
+        XCTAssertTrue(state.members.isEmpty)
     }
 
     func test_appState_hasHousehold_whenHouseholdSet() async {

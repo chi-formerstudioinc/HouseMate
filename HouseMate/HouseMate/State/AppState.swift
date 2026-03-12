@@ -28,10 +28,12 @@ final class AppState {
     }
 
     func signOut() async throws {
+        defer {
+            household = nil
+            currentMember = nil
+            members = []
+        }
         try await authService.signOut()
-        household = nil
-        currentMember = nil
-        members = []
     }
 
     func memberName(for memberId: UUID?) -> String {
