@@ -28,40 +28,40 @@ final class RealtimeService {
         let ch = supabase.channel("household-\(idStr)")
 
         ch.onPostgresChange(AnyAction.self, schema: "public", table: "tasks",
-            filter: "household_id=eq.\(idStr)") { _ in
+            filter: "household_id=eq.\(idStr)") { [weak self] _ in
             Task { @MainActor in
                 NotificationCenter.default.post(name: RealtimeService.tasksChangedNotification.name, object: nil)
             }
         }
 
-        ch.onPostgresChange(AnyAction.self, schema: "public", table: "task_completion_logs") { _ in
+        ch.onPostgresChange(AnyAction.self, schema: "public", table: "task_completion_logs") { [weak self] _ in
             Task { @MainActor in
                 NotificationCenter.default.post(name: RealtimeService.tasksChangedNotification.name, object: nil)
             }
         }
 
         ch.onPostgresChange(AnyAction.self, schema: "public", table: "bin_schedules",
-            filter: "household_id=eq.\(idStr)") { _ in
+            filter: "household_id=eq.\(idStr)") { [weak self] _ in
             Task { @MainActor in
                 NotificationCenter.default.post(name: RealtimeService.binScheduleChangedNotification.name, object: nil)
             }
         }
 
         ch.onPostgresChange(AnyAction.self, schema: "public", table: "maintenance_items",
-            filter: "household_id=eq.\(idStr)") { _ in
+            filter: "household_id=eq.\(idStr)") { [weak self] _ in
             Task { @MainActor in
                 NotificationCenter.default.post(name: RealtimeService.maintenanceChangedNotification.name, object: nil)
             }
         }
 
-        ch.onPostgresChange(AnyAction.self, schema: "public", table: "maintenance_logs") { _ in
+        ch.onPostgresChange(AnyAction.self, schema: "public", table: "maintenance_logs") { [weak self] _ in
             Task { @MainActor in
                 NotificationCenter.default.post(name: RealtimeService.maintenanceChangedNotification.name, object: nil)
             }
         }
 
         ch.onPostgresChange(AnyAction.self, schema: "public", table: "members",
-            filter: "household_id=eq.\(idStr)") { _ in
+            filter: "household_id=eq.\(idStr)") { [weak self] _ in
             Task { @MainActor in
                 NotificationCenter.default.post(name: RealtimeService.membersChangedNotification.name, object: nil)
             }
