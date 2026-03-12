@@ -21,7 +21,12 @@ final class AuthService {
     }
 
     func restoreSession() async throws -> User? {
-        _ = try await supabase.auth.session
-        return supabase.auth.currentUser
+        do {
+            let session = try await supabase.auth.session
+            return session.user
+        } catch AuthError.sessionMissing {
+            return nil  // not signed in — not an error
+        }
+        // other errors (network, etc.) propagate naturally
     }
 }

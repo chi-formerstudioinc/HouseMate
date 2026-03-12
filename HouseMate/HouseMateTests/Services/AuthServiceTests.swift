@@ -11,7 +11,7 @@ final class AuthServiceTests: XCTestCase {
 
     func test_currentUser_isNilWhenNotSignedIn() async {
         let service = AuthService()
-        // If test runs without a real session, currentUser should be nil
-        _ = service.currentUser  // just verify it doesn't crash
+        // In test environment (no active session), currentUser should be nil
+        XCTAssertNil(service.currentUser)
     }
 }
