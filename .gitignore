@@ -21,3 +21,6 @@ build/
 
 # macOS
 .DS_Store
+
+# Secrets
+HouseMate/HouseMate/Config/Secrets.swift
