@@ -4,7 +4,7 @@ import XCTest
 
 @MainActor
 final class AuthServiceTests: XCTestCase {
-    func test_authService_exists() {
+    func test_authService_exists() async {
         let service = AuthService()
         XCTAssertNotNil(service)
     }
