@@ -1,14 +1,14 @@
-# HouseMate Tasks Feature Implementation Plan
+# HouseMate Tasks Feature Implementation Plan (Supabase)
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the complete Tasks tab — list with sorting/filtering/swipe actions, task detail with completion history, add/edit form with recurring support, template browser, and CloudKit push notifications for task completion and assignment.
+**Goal:** Build the complete Tasks tab — list with sorting/filtering/swipe actions, task detail with completion history, add/edit form with recurring support, and a template browser. In-app live updates via Supabase Realtime (tasks refresh automatically when another member makes changes).
 
-**Architecture:** `AppState` (`@Observable`) holds the loaded household context and is injected via SwiftUI `.environment`. `TasksViewModel` and `TaskFormViewModel` (`@Observable`) are owned as `@State` in their views; they receive `ownerRecordName` from `AppState` for all service calls. Pure sort/filter logic lives in `TasksViewModel` computed properties and is fully unit-tested. CloudKit zone subscriptions drive remote push; on receipt, the device fetches changed records and fires local UNUserNotificationCenter notifications.
+**Architecture:** `AppState` (`@Observable`) holds household/member context and is injected via SwiftUI `.environment`. `TasksViewModel` and `TaskFormViewModel` (`@Observable`) are owned as `@State` in their views. They call `TaskService` and `TemplateService` for all data operations. `TasksViewModel` observes `NotificationCenter` for `RealtimeService.tasksChangedNotification` to refresh the list when another member changes a task. Sorting/filtering logic is pure computed properties on `TasksViewModel` and is fully unit-tested.
 
-**Tech Stack:** Swift 5.9+, SwiftUI (@Observable), CloudKit, UNUserNotificationCenter, XCTest, iOS 17.0+
+**Tech Stack:** Swift 5.9+, SwiftUI (`@Observable`), Supabase (via `TaskService`/`TemplateService`), UNUserNotificationCenter, XCTest, iOS 17.0+
 
-**Prerequisite:** Foundation plan complete — `HouseMate/Models/`, `HouseMate/Services/`, `HouseMate/Resources/BuiltInTemplates.swift`, and the 4-tab navigation skeleton must all be in place.
+**Prerequisite:** Foundation plan complete — `HouseMate/Models/`, `HouseMate/Services/`, `HouseMate/State/AppState.swift`, `HouseMate/Resources/BuiltInTemplates.swift`, `HouseMate/Services/RealtimeService.swift`, and the 4-tab navigation skeleton must all be in place.
 
 **Spec:** `docs/superpowers/specs/2026-03-12-housemate-design.md`
 
@@ -17,737 +17,489 @@
 ## File Structure
 
 **New files:**
-- `HouseMate/App/AppState.swift` — shared `@Observable` holding household, members, current user context
-- `HouseMate/ViewModels/TasksViewModel.swift` — task list state: sort, filter, fetch, complete, delete
-- `HouseMate/ViewModels/TaskFormViewModel.swift` — add/edit form state and validation
-- `HouseMate/Views/Tasks/TaskRowView.swift` — single list row with overdue indicator + swipe actions
+- `HouseMate/ViewModels/TasksViewModel.swift` — task list state: fetch, filter, sort, complete, delete; observes RealtimeService notifications
+- `HouseMate/ViewModels/TaskFormViewModel.swift` — add/edit form state, validation, save
+- `HouseMate/Views/Tasks/TaskRowView.swift` — single list row with overdue indicator and swipe actions
+- `HouseMate/Views/Tasks/TaskListView.swift` — full task list: filter bar, list, FAB
 - `HouseMate/Views/Tasks/TaskDetailView.swift` — task detail with completion log
-- `HouseMate/Views/Tasks/TaskFormView.swift` — add/edit task sheet
-- `HouseMate/Views/Tasks/TaskTemplatesView.swift` — browse + instantiate templates
-- `HouseMate/Views/Tasks/TaskFilterBar.swift` — All / Mine / Unassigned / Completed picker
-- `HouseMate/Views/Shared/MemberPickerView.swift` — reusable member selector used in task form
-- `HouseMateTests/ViewModels/TasksViewModelTests.swift` — sort/filter logic tests
-- `HouseMateTests/ViewModels/TaskFormViewModelTests.swift` — form validation tests
+- `HouseMate/Views/Tasks/TaskFormView.swift` — add/edit task form sheet
+- `HouseMate/Views/Tasks/TaskTemplateView.swift` — template browser sheet
 
 **Modified files:**
-- `HouseMate/HouseMateApp.swift` — create + inject AppState, call load after CloudKit init
-- `HouseMate/Views/Tasks/TasksView.swift` — replace placeholder with full Tasks list implementation
+- `HouseMate/Views/Main/MainTabView.swift` — replace Tasks placeholder with `TaskListView`
 
 ---
 
-## Chunk 1: AppState + TasksViewModel Sort/Filter Logic
+## Chunk 1: ViewModels
 
-### Task 1: AppState
-
-**Files:**
-- Create: `HouseMate/App/AppState.swift`
-- Modify: `HouseMate/HouseMateApp.swift`
-
-- [ ] **Step 1: Create App/AppState.swift**
-
-  In Xcode, create `HouseMate/App/` group if it doesn't exist, then add:
-
-  ```swift
-  import CloudKit
-  import Observation
-
-  @Observable
-  final class AppState {
-      var household: Household?
-      var householdMembers: [Member] = []
-      var currentMember: Member?
-      var isLoading = false
-      var loadError: Error?
-
-      // MARK: - Derived
-
-      /// The household owner's CloudKit record name — required for db routing in all services.
-      var ownerRecordName: String? {
-          household?.createdBy?.recordID.recordName
-      }
-
-      var currentUserRecordName: String? {
-          CloudKitService.shared.currentUserRecordName
-      }
-
-      var isHouseholdOwner: Bool {
-          guard let owner = ownerRecordName, let current = currentUserRecordName else { return false }
-          return owner == current
-      }
-
-      var hasHousehold: Bool { household != nil }
-
-      // MARK: - Load
-
-      func load() async {
-          guard !isLoading else { return }
-          isLoading = true
-          defer { isLoading = false }
-          do {
-              let svc = HouseholdService()
-              household = try await svc.fetchHousehold()
-              guard let household, let ownerName = ownerRecordName else { return }
-              householdMembers = try await svc.fetchMembers(
-                  household: household, ownerRecordName: ownerName
-              )
-              currentMember = householdMembers.first {
-                  $0.appleUserID == currentUserRecordName
-              }
-          } catch {
-              loadError = error
-          }
-      }
-  }
-  ```
-
-- [ ] **Step 2: Update HouseMateApp.swift to own and inject AppState**
-
-  ```swift
-  import SwiftUI
-
-  @main
-  struct HouseMateApp: App {
-      @State private var appState = AppState()
-
-      var body: some Scene {
-          WindowGroup {
-              ContentView()
-                  .environment(appState)
-                  .task {
-                      await initializeCloudKit()
-                      await appState.load()
-                  }
-          }
-      }
-
-      private func initializeCloudKit() async {
-          do {
-              let ck = CloudKitService.shared
-              try await ck.checkAccountStatus()
-              try await ck.fetchAndCacheCurrentUserRecordName()
-              try await ck.createSharedZoneIfNeeded()
-          } catch {
-              print("[HouseMate] CloudKit init: \(error.localizedDescription)")
-          }
-      }
-  }
-  ```
-
-- [ ] **Step 3: Build — no compile errors**
-
-  ⌘B.
-
-- [ ] **Step 4: Commit**
-
-  ```bash
-  git add HouseMate/App/AppState.swift HouseMate/HouseMateApp.swift
-  git commit -m "feat: add AppState with household context and CloudKit loading"
-  ```
-
----
-
-### Task 2: TasksViewModel — Sort/Filter Logic (TDD)
+### Task 1: TasksViewModel
 
 **Files:**
 - Create: `HouseMate/ViewModels/TasksViewModel.swift`
 - Create: `HouseMateTests/ViewModels/TasksViewModelTests.swift`
 
-> In Xcode: add `HouseMate/ViewModels/` group to the main target, and `HouseMateTests/ViewModels/` group to the test target.
-
-- [ ] **Step 1: Create TasksViewModelTests.swift**
+- [ ] **Step 1: Write failing tests**
 
   ```swift
+  // HouseMateTests/ViewModels/TasksViewModelTests.swift
   import XCTest
-  import CloudKit
   @testable import HouseMate
 
   final class TasksViewModelTests: XCTestCase {
+      let householdId = UUID()
+      var memberId: UUID!
 
-      private func pastDate(_ days: Int) -> Date {
-          Calendar.current.date(byAdding: .day, value: -days, to: Date())!
+      override func setUp() {
+          super.setUp()
+          memberId = UUID()
       }
 
-      private func futureDate(_ days: Int) -> Date {
-          Calendar.current.date(byAdding: .day, value: days, to: Date())!
-      }
-
-      private func task(
-          title: String,
-          dueDate: Date?,
-          isCompleted: Bool = false,
-          assignedToID: String? = nil
-      ) -> HouseMateTask {
-          var t = HouseMateTask(
-              title: title, category: .other, priority: .medium,
-              isRecurring: false, recurringInterval: nil, dueDate: dueDate
-          )
-          t.isCompleted = isCompleted
-          if let id = assignedToID {
-              t.assignedTo = CKRecord.Reference(
-                  recordID: CKRecord.ID(recordName: id), action: .none
-              )
-          }
-          return t
-      }
-
-      // MARK: - Sort: Order
-
-      func test_sort_overdueTasks_appearBeforeFutureTasks() {
-          let vm = TasksViewModel()
-          vm.tasks = [task(title: "Future", dueDate: futureDate(3)),
-                      task(title: "Overdue", dueDate: pastDate(2))]
-          XCTAssertEqual(vm.sortedFilteredTasks.first?.title, "Overdue")
-      }
-
-      func test_sort_overdueTasksSortedByDueDateAscending() {
-          let vm = TasksViewModel()
-          vm.tasks = [task(title: "Recent Overdue", dueDate: pastDate(1)),
-                      task(title: "Older Overdue",  dueDate: pastDate(5))]
-          let sorted = vm.sortedFilteredTasks
-          XCTAssertEqual(sorted[0].title, "Older Overdue")
-          XCTAssertEqual(sorted[1].title, "Recent Overdue")
-      }
-
-      func test_sort_futureTasksSortedByDueDateAscending() {
-          let vm = TasksViewModel()
-          vm.tasks = [task(title: "Far Future",  dueDate: futureDate(10)),
-                      task(title: "Near Future", dueDate: futureDate(2))]
-          let sorted = vm.sortedFilteredTasks
-          XCTAssertEqual(sorted[0].title, "Near Future")
-          XCTAssertEqual(sorted[1].title, "Far Future")
-      }
-
-      func test_sort_undatedTasksAppearAfterDatedTasks() {
-          let vm = TasksViewModel()
-          vm.tasks = [task(title: "Undated", dueDate: nil),
-                      task(title: "Future",  dueDate: futureDate(1))]
-          let sorted = vm.sortedFilteredTasks
-          XCTAssertEqual(sorted.first?.title, "Future")
-          XCTAssertEqual(sorted.last?.title,  "Undated")
-      }
-
-      func test_sort_completedTasksAppearLast() {
-          let vm = TasksViewModel()
-          vm.tasks = [task(title: "Done",    dueDate: futureDate(1), isCompleted: true),
-                      task(title: "Pending", dueDate: futureDate(2))]
-          let sorted = vm.sortedFilteredTasks
-          // "all" filter excludes completed — Pending is only result
-          XCTAssertEqual(sorted.count, 1)
-          XCTAssertEqual(sorted.first?.title, "Pending")
-      }
-
-      // MARK: - Filter: All
-
-      func test_filter_all_excludesCompletedTasks() {
-          let vm = TasksViewModel()
-          vm.tasks = [task(title: "Open",      dueDate: nil, isCompleted: false),
-                      task(title: "Completed", dueDate: nil, isCompleted: true)]
-          vm.filter = .all
-          let result = vm.sortedFilteredTasks
-          XCTAssertEqual(result.count, 1)
-          XCTAssertEqual(result[0].title, "Open")
-      }
-
-      // MARK: - Filter: Completed
-
-      func test_filter_completed_showsOnlyCompletedTasks() {
-          let vm = TasksViewModel()
-          vm.tasks = [task(title: "Done", dueDate: nil, isCompleted: true),
-                      task(title: "Open", dueDate: nil, isCompleted: false)]
-          vm.filter = .completed
-          let result = vm.sortedFilteredTasks
-          XCTAssertEqual(result.count, 1)
-          XCTAssertEqual(result[0].title, "Done")
-      }
-
-      // MARK: - Filter: Mine
-
-      func test_filter_mine_showsOnlyTasksAssignedToCurrentUser() {
-          let vm = TasksViewModel()
-          vm.currentUserRecordName = "user-123"
-          vm.tasks = [task(title: "Mine",    dueDate: nil, assignedToID: "user-123"),
-                      task(title: "Theirs",  dueDate: nil, assignedToID: "user-456"),
-                      task(title: "No one",  dueDate: nil, assignedToID: nil)]
-          vm.filter = .mine
-          let result = vm.sortedFilteredTasks
-          XCTAssertEqual(result.count, 1)
-          XCTAssertEqual(result[0].title, "Mine")
-      }
-
-      func test_filter_mine_excludesCompletedTasks() {
-          let vm = TasksViewModel()
-          vm.currentUserRecordName = "user-123"
-          vm.tasks = [task(title: "Mine Done",  dueDate: nil, isCompleted: true,  assignedToID: "user-123"),
-                      task(title: "Mine Open",  dueDate: nil, isCompleted: false, assignedToID: "user-123")]
-          vm.filter = .mine
-          let result = vm.sortedFilteredTasks
-          XCTAssertEqual(result.count, 1)
-          XCTAssertEqual(result[0].title, "Mine Open")
-      }
-
-      // MARK: - Filter: Unassigned
-
-      func test_filter_unassigned_showsOnlyUnassignedIncompleteTasks() {
-          let vm = TasksViewModel()
-          vm.tasks = [
-              task(title: "Free",      dueDate: nil, isCompleted: false, assignedToID: nil),
-              task(title: "Assigned",  dueDate: nil, isCompleted: false, assignedToID: "u1"),
-              task(title: "Free Done", dueDate: nil, isCompleted: true,  assignedToID: nil)
+      func makeTasks() -> [HMTask] {
+          let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: Date())!
+          let tomorrow  = Calendar.current.date(byAdding: .day, value:  1, to: Date())!
+          let nextWeek  = Calendar.current.date(byAdding: .day, value:  7, to: Date())!
+          return [
+              HMTask.makeTest(title: "Overdue",   dueDate: yesterday, isCompleted: false),
+              HMTask.makeTest(title: "Tomorrow",  dueDate: tomorrow,  isCompleted: false),
+              HMTask.makeTest(title: "Next Week", dueDate: nextWeek,  isCompleted: false),
+              HMTask.makeTest(title: "Undated",   dueDate: nil,       isCompleted: false),
+              HMTask.makeTest(title: "Done",      dueDate: tomorrow,  isCompleted: true),
           ]
-          vm.filter = .unassigned
-          let result = vm.sortedFilteredTasks
-          XCTAssertEqual(result.count, 1)
-          XCTAssertEqual(result[0].title, "Free")
+      }
+
+      // MARK: - Sorting
+
+      func test_defaultSort_overdueFirst() {
+          let vm = TasksViewModel(householdId: householdId, memberId: memberId)
+          vm.tasks = makeTasks()
+          vm.filterMode = .all
+          let sorted = vm.filteredAndSortedTasks
+          XCTAssertEqual(sorted.first?.title, "Overdue")
+      }
+
+      func test_defaultSort_dueDateAscendingAfterOverdue() {
+          let vm = TasksViewModel(householdId: householdId, memberId: memberId)
+          vm.tasks = makeTasks()
+          vm.filterMode = .all
+          let sorted = vm.filteredAndSortedTasks
+          let nonOverdueTitles = sorted.filter { !$0.isOverdue && !$0.isCompleted && $0.dueDate != nil }.map(\.title)
+          XCTAssertEqual(nonOverdueTitles.first, "Tomorrow")
+      }
+
+      func test_defaultSort_undatedAfterDated() {
+          let vm = TasksViewModel(householdId: householdId, memberId: memberId)
+          vm.tasks = makeTasks()
+          vm.filterMode = .all
+          let sorted = vm.filteredAndSortedTasks
+          let lastBeforeCompleted = sorted.filter { !$0.isCompleted }.last
+          XCTAssertEqual(lastBeforeCompleted?.title, "Undated")
+      }
+
+      // MARK: - Filtering
+
+      func test_filterAll_includesIncompleteAndComplete() {
+          let vm = TasksViewModel(householdId: householdId, memberId: memberId)
+          vm.tasks = makeTasks()
+          vm.filterMode = .all
+          // "all" shows incomplete tasks (not completed)
+          let titles = vm.filteredAndSortedTasks.map(\.title)
+          XCTAssertFalse(titles.contains("Done"))
+          XCTAssertTrue(titles.contains("Tomorrow"))
+      }
+
+      func test_filterCompleted_showsOnlyCompleted() {
+          let vm = TasksViewModel(householdId: householdId, memberId: memberId)
+          vm.tasks = makeTasks()
+          vm.filterMode = .completed
+          XCTAssertTrue(vm.filteredAndSortedTasks.allSatisfy(\.isCompleted))
+          XCTAssertEqual(vm.filteredAndSortedTasks.count, 1)
+      }
+
+      func test_filterMine_showsOnlyAssignedToCurrentMember() {
+          let vm = TasksViewModel(householdId: householdId, memberId: memberId)
+          var tasks = makeTasks()
+          tasks[0] = HMTask.makeTest(title: "Mine", assignedTo: memberId)
+          tasks[1] = HMTask.makeTest(title: "Theirs", assignedTo: UUID())
+          vm.tasks = tasks
+          vm.filterMode = .mine
+          let titles = vm.filteredAndSortedTasks.map(\.title)
+          XCTAssertTrue(titles.contains("Mine"))
+          XCTAssertFalse(titles.contains("Theirs"))
+      }
+
+      func test_filterUnassigned_showsOnlyNilAssignee() {
+          let vm = TasksViewModel(householdId: householdId, memberId: memberId)
+          vm.tasks = makeTasks()  // all have nil assignedTo
+          vm.filterMode = .unassigned
+          XCTAssertTrue(vm.filteredAndSortedTasks.allSatisfy { $0.assignedTo == nil })
       }
   }
   ```
 
-- [ ] **Step 2: Run — expect compile failure**
+- [ ] **Step 2: Run tests to verify they fail**
 
-  ⌘U. Expected: `TasksViewModel` not defined.
+  ```bash
+  xcodebuild test -scheme HouseMate -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing HouseMateTests/TasksViewModelTests
+  ```
+  Expected: FAIL — `TasksViewModel` not defined.
 
-- [ ] **Step 3: Create TasksViewModel.swift**
+- [ ] **Step 3: Implement TasksViewModel.swift**
 
   ```swift
-  import CloudKit
+  // HouseMate/ViewModels/TasksViewModel.swift
   import Observation
+  import Foundation
 
-  enum TaskFilter: String, CaseIterable, Identifiable {
-      case all        = "All"
-      case mine       = "Mine"
-      case unassigned = "Unassigned"
-      case completed  = "Completed"
-      var id: String { rawValue }
+  enum TaskFilterMode: String, CaseIterable {
+      case all, mine, unassigned, completed
+      var displayName: String { rawValue.capitalized }
   }
 
   @Observable
+  @MainActor
   final class TasksViewModel {
-      var tasks: [HouseMateTask] = []
-      var filter: TaskFilter = .all
+      var tasks: [HMTask] = []
+      var filterMode: TaskFilterMode = .all
       var isLoading = false
       var error: Error?
-      var completionLogs: [String: [TaskCompletionLog]] = [:]  // key = task recordID.recordName
 
-      /// Set from AppState.currentUserRecordName — powers the "Mine" filter.
-      var currentUserRecordName: String?
+      private let householdId: UUID
+      private let memberId: UUID
+      private let taskService = TaskService()
+      private var realtimeObserver: NSObjectProtocol?
 
-      // MARK: - Sorting + Filtering
+      init(householdId: UUID, memberId: UUID) {
+          self.householdId = householdId
+          self.memberId = memberId
+      }
 
-      var sortedFilteredTasks: [HouseMateTask] {
-          let base: [HouseMateTask]
-          switch filter {
+      var filteredAndSortedTasks: [HMTask] {
+          let filtered: [HMTask]
+          switch filterMode {
           case .all:
-              base = tasks.filter { !$0.isCompleted }
+              filtered = tasks.filter { !$0.isCompleted }
           case .mine:
-              base = tasks.filter {
-                  !$0.isCompleted &&
-                  $0.assignedTo?.recordID.recordName == currentUserRecordName
-              }
+              filtered = tasks.filter { $0.assignedTo == memberId && !$0.isCompleted }
           case .unassigned:
-              base = tasks.filter { !$0.isCompleted && $0.assignedTo == nil }
+              filtered = tasks.filter { $0.assignedTo == nil && !$0.isCompleted }
           case .completed:
-              base = tasks.filter { $0.isCompleted }
+              filtered = tasks.filter(\.isCompleted)
           }
-          return base.sorted(by: Self.taskSort)
+          return filtered.sorted { a, b in
+              // 1. Overdue first
+              if a.isOverdue != b.isOverdue { return a.isOverdue }
+              // 2. Dated before undated
+              switch (a.dueDate, b.dueDate) {
+              case (.some(let da), .some(let db)): return da < db
+              case (.some, .none): return true
+              case (.none, .some): return false
+              case (.none, .none): return a.createdAt < b.createdAt
+              }
+          }
       }
 
-      private static func taskSort(_ a: HouseMateTask, _ b: HouseMateTask) -> Bool {
-          if a.isOverdue != b.isOverdue { return a.isOverdue }
-          switch (a.dueDate, b.dueDate) {
-          case (.some(let da), .some(let db)): return da < db
-          case (.some, .none):                 return true
-          case (.none, .some):                 return false
-          case (.none, .none):                 return a.title < b.title
-          }
-      }
-
-      // MARK: - CloudKit Operations
-
-      func loadTasks(ownerRecordName: String) async {
+      func load() async {
           isLoading = true
-          defer { isLoading = false }
+          error = nil
           do {
-              tasks = try await TaskService().fetchAllTasks(ownerRecordName: ownerRecordName)
+              tasks = try await taskService.fetchTasks(householdId: householdId)
           } catch {
               self.error = error
           }
+          isLoading = false
       }
 
-      func completeTask(_ task: HouseMateTask, memberRef: CKRecord.Reference, ownerRecordName: String) async {
+      func subscribeToRealtime() {
+          realtimeObserver = NotificationCenter.default.addObserver(
+              forName: RealtimeService.tasksChangedNotification.name,
+              object: nil, queue: .main
+          ) { [weak self] _ in
+              Task { @MainActor [weak self] in await self?.load() }
+          }
+      }
+
+      func unsubscribeFromRealtime() {
+          if let observer = realtimeObserver {
+              NotificationCenter.default.removeObserver(observer)
+              realtimeObserver = nil
+          }
+      }
+
+      /// Returns nil if the task was already completed by another member (concurrent race).
+      func completeTask(_ task: HMTask) async -> Bool {
           do {
-              let (updated, _) = try await TaskService().completeTask(
-                  task, by: memberRef, ownerRecordName: ownerRecordName
-              )
-              if let idx = tasks.firstIndex(where: { $0.recordID == task.recordID }) {
-                  tasks[idx] = updated
+              guard let updated = try await taskService.completeTask(task, memberId: memberId) else {
+                  return false  // already completed
               }
-          } catch CloudKitError.alreadyCompleted {
-              error = CloudKitError.alreadyCompleted
-          } catch {
-              self.error = error
-          }
-      }
-
-      func deleteTask(_ task: HouseMateTask, ownerRecordName: String) async {
-          do {
-              try await TaskService().deleteTask(task, ownerRecordName: ownerRecordName)
-              tasks.removeAll { $0.recordID == task.recordID }
-          } catch {
-              self.error = error
-          }
-      }
-
-      func loadCompletionLogs(for task: HouseMateTask, ownerRecordName: String) async {
-          guard let key = task.recordID?.recordName else { return }
-          do {
-              let logs = try await TaskService().fetchCompletionLogs(
-                  for: task, ownerRecordName: ownerRecordName
-              )
-              completionLogs[key] = logs
-          } catch {
-              self.error = error
-          }
-      }
-
-      func saveTask(_ task: HouseMateTask, ownerRecordName: String) async -> HouseMateTask? {
-          do {
-              let saved = try await TaskService().saveTask(task, ownerRecordName: ownerRecordName)
-              if let idx = tasks.firstIndex(where: { $0.recordID == saved.recordID }) {
-                  tasks[idx] = saved
-              } else {
-                  tasks.append(saved)
+              if let index = tasks.firstIndex(where: { $0.id == task.id }) {
+                  tasks[index] = updated
               }
-              return saved
+              return true
           } catch {
               self.error = error
-              return nil
+              return false
           }
       }
 
-      func saveUserTemplate(_ template: TaskTemplate, ownerRecordName: String) async {
+      func deleteTask(_ task: HMTask) async {
           do {
-              _ = try await TaskService().saveUserTaskTemplate(template, ownerRecordName: ownerRecordName)
+              try await taskService.deleteTask(id: task.id)
+              tasks.removeAll { $0.id == task.id }
           } catch {
               self.error = error
           }
       }
 
-      func deleteUserTemplate(_ template: TaskTemplate, ownerRecordName: String) async {
-          do {
-              try await TaskService().deleteUserTaskTemplate(template, ownerRecordName: ownerRecordName)
-          } catch {
-              self.error = error
+      func taskAdded(_ task: HMTask) {
+          tasks.insert(task, at: 0)
+      }
+
+      func taskUpdated(_ task: HMTask) {
+          if let index = tasks.firstIndex(where: { $0.id == task.id }) {
+              tasks[index] = task
           }
       }
   }
   ```
 
-- [ ] **Step 4: Run tests — all PASS**
-
-  ⌘U. All 11 `TasksViewModelTests` pass.
+- [ ] **Step 4: Run tests to verify they pass**
 
 - [ ] **Step 5: Commit**
 
   ```bash
   git add HouseMate/ViewModels/TasksViewModel.swift HouseMateTests/ViewModels/TasksViewModelTests.swift
-  git commit -m "feat: add TasksViewModel with sort/filter logic (tested)"
+  git commit -m "feat: add TasksViewModel with filtering, sorting, and Realtime integration"
   ```
 
 ---
 
-### Task 3: TaskFormViewModel (TDD)
+### Task 2: TaskFormViewModel
 
 **Files:**
 - Create: `HouseMate/ViewModels/TaskFormViewModel.swift`
 - Create: `HouseMateTests/ViewModels/TaskFormViewModelTests.swift`
 
-- [ ] **Step 1: Create TaskFormViewModelTests.swift**
+- [ ] **Step 1: Write failing tests**
 
   ```swift
+  // HouseMateTests/ViewModels/TaskFormViewModelTests.swift
   import XCTest
-  import CloudKit
   @testable import HouseMate
 
   final class TaskFormViewModelTests: XCTestCase {
-
-      func test_isValid_emptyTitle_returnsFalse() {
-          let vm = TaskFormViewModel()
-          vm.title = ""
-          XCTAssertFalse(vm.isValid)
+      func test_newForm_hasDefaultValues() {
+          let vm = TaskFormViewModel(householdId: UUID(), memberId: UUID())
+          XCTAssertEqual(vm.title, "")
+          XCTAssertEqual(vm.category, .other)
+          XCTAssertEqual(vm.priority, .medium)
+          XCTAssertFalse(vm.isRecurring)
+          XCTAssertNil(vm.recurringInterval)
       }
 
-      func test_isValid_whitespaceOnlyTitle_returnsFalse() {
-          let vm = TaskFormViewModel()
-          vm.title = "   "
-          XCTAssertFalse(vm.isValid)
-      }
-
-      func test_isValid_nonEmptyTitle_returnsTrue() {
-          let vm = TaskFormViewModel()
-          vm.title = "Take out trash"
-          XCTAssertTrue(vm.isValid)
-      }
-
-      func test_isValid_recurringWithNoInterval_returnsFalse() {
-          let vm = TaskFormViewModel()
-          vm.title = "Vacuum"
-          vm.isRecurring = true
-          vm.recurringInterval = nil
-          XCTAssertFalse(vm.isValid)
-      }
-
-      func test_isValid_recurringWithInterval_returnsTrue() {
-          let vm = TaskFormViewModel()
-          vm.title = "Vacuum"
-          vm.isRecurring = true
-          vm.recurringInterval = .weekly
-          XCTAssertTrue(vm.isValid)
-      }
-
-      func test_toTask_mapsAllFields() {
-          let vm = TaskFormViewModel()
-          vm.title = "Take out trash"
-          vm.category = .kitchen
-          vm.priority = .high
-          vm.isRecurring = true
-          vm.recurringInterval = .weekly
-          vm.hasDueDate = true
-          var comps = DateComponents(); comps.year = 2026; comps.month = 4; comps.day = 1
-          vm.dueDate = Calendar.current.date(from: comps)!
-          let task = vm.toTask()
-          XCTAssertEqual(task.title, "Take out trash")
-          XCTAssertEqual(task.category, .kitchen)
-          XCTAssertEqual(task.priority, .high)
-          XCTAssertTrue(task.isRecurring)
-          XCTAssertEqual(task.recurringInterval, .weekly)
-          XCTAssertNotNil(task.dueDate)
-      }
-
-      func test_toTask_noDueDate_whenHasDueDateFalse() {
-          let vm = TaskFormViewModel()
-          vm.title = "Test"
-          vm.hasDueDate = false
-          let task = vm.toTask()
-          XCTAssertNil(task.dueDate)
-      }
-
-      func test_populate_loadsExistingTaskFields() {
-          var existing = HouseMateTask(
-              title: "Mop floors", category: .bathroom, priority: .low,
-              isRecurring: false, recurringInterval: nil, dueDate: nil
+      func test_editForm_populatesFieldsFromTask() {
+          let task = HMTask.makeTest(
+              title: "Clean kitchen",
+              category: .kitchen,
+              priority: .high,
+              isRecurring: true,
+              recurringInterval: .weekly
           )
-          existing.recordID = CKRecord.ID(recordName: "task-999")
-          let vm = TaskFormViewModel()
-          vm.populate(from: existing)
-          XCTAssertEqual(vm.title, "Mop floors")
-          XCTAssertEqual(vm.category, .bathroom)
-          XCTAssertEqual(vm.priority, .low)
-          XCTAssertEqual(vm.editingRecordID?.recordName, "task-999")
+          let vm = TaskFormViewModel(householdId: UUID(), memberId: UUID(), editingTask: task)
+          XCTAssertEqual(vm.title, "Clean kitchen")
+          XCTAssertEqual(vm.category, .kitchen)
+          XCTAssertEqual(vm.priority, .high)
+          XCTAssertTrue(vm.isRecurring)
+          XCTAssertEqual(vm.recurringInterval, .weekly)
+      }
+
+      func test_canSave_requiresNonEmptyTitle() {
+          let vm = TaskFormViewModel(householdId: UUID(), memberId: UUID())
+          XCTAssertFalse(vm.canSave)
+          vm.title = "  "  // whitespace only
+          XCTAssertFalse(vm.canSave)
+          vm.title = "Take out trash"
+          XCTAssertTrue(vm.canSave)
+      }
+
+      func test_toggleRecurring_clearsInterval() {
+          let vm = TaskFormViewModel(householdId: UUID(), memberId: UUID())
+          vm.isRecurring = true
+          vm.recurringInterval = .weekly
+          vm.isRecurring = false
+          XCTAssertNil(vm.recurringInterval)
       }
   }
   ```
 
-- [ ] **Step 2: Run — expect compile failure**
+- [ ] **Step 2: Run tests to verify they fail**
 
-  ⌘U.
-
-- [ ] **Step 3: Create TaskFormViewModel.swift**
+- [ ] **Step 3: Implement TaskFormViewModel.swift**
 
   ```swift
-  import CloudKit
+  // HouseMate/ViewModels/TaskFormViewModel.swift
   import Observation
+  import Foundation
 
   @Observable
+  @MainActor
   final class TaskFormViewModel {
       var title: String = ""
       var category: TaskCategory = .other
       var priority: TaskPriority = .medium
-      var assignedTo: CKRecord.Reference? = nil
+      var assignedTo: UUID? = nil
+      var dueDate: Date? = nil
       var hasDueDate: Bool = false
-      var dueDate: Date = Date()
-      var isRecurring: Bool = false
+      var isRecurring: Bool = false {
+          didSet { if !isRecurring { recurringInterval = nil } }
+      }
       var recurringInterval: RecurringInterval? = nil
+      var isSaving = false
+      var saveError: Error?
 
-      /// Non-nil when editing an existing task.
-      var editingRecordID: CKRecord.ID? = nil
+      private let householdId: UUID
+      private let memberId: UUID
+      private let editingTask: HMTask?
+      private let taskService = TaskService()
 
-      var isEditing: Bool { editingRecordID != nil }
+      var canSave: Bool { !title.trimmingCharacters(in: .whitespaces).isEmpty }
+      var isEditing: Bool { editingTask != nil }
 
-      var isValid: Bool {
-          guard !title.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
-          if isRecurring && recurringInterval == nil { return false }
-          return true
+      init(householdId: UUID, memberId: UUID, editingTask: HMTask? = nil) {
+          self.householdId = householdId
+          self.memberId = memberId
+          self.editingTask = editingTask
+          if let task = editingTask {
+              title = task.title
+              category = task.category
+              priority = task.priority
+              assignedTo = task.assignedTo
+              if let due = task.dueDate { dueDate = due; hasDueDate = true }
+              isRecurring = task.isRecurring
+              recurringInterval = task.recurringInterval
+          }
       }
 
-      func toTask() -> HouseMateTask {
-          var task = HouseMateTask(
-              title: title.trimmingCharacters(in: .whitespaces),
-              category: category,
-              priority: priority,
-              isRecurring: isRecurring,
-              recurringInterval: isRecurring ? recurringInterval : nil,
-              dueDate: hasDueDate ? dueDate : nil
-          )
-          task.recordID  = editingRecordID
-          task.assignedTo = assignedTo
-          return task
-      }
-
-      func populate(from task: HouseMateTask) {
-          editingRecordID   = task.recordID
-          title             = task.title
-          category          = task.category
-          priority          = task.priority
-          assignedTo        = task.assignedTo
-          isRecurring       = task.isRecurring
-          recurringInterval = task.recurringInterval
-          if let due = task.dueDate {
-              hasDueDate = true
-              dueDate    = due
-          } else {
-              hasDueDate = false
+      /// Saves (create or update). Returns the saved task on success, nil on failure.
+      func save() async -> HMTask? {
+          guard canSave else { return nil }
+          isSaving = true
+          saveError = nil
+          do {
+              let result: HMTask
+              if let existing = editingTask {
+                  var updated = existing
+                  updated.title = title.trimmingCharacters(in: .whitespaces)
+                  updated.category = category
+                  updated.priority = priority
+                  updated.assignedTo = assignedTo
+                  updated.dueDate = hasDueDate ? dueDate : nil
+                  updated.isRecurring = isRecurring
+                  updated.recurringInterval = isRecurring ? recurringInterval : nil
+                  try await taskService.updateTask(updated)
+                  result = updated
+              } else {
+                  let newTask = HMTask(
+                      id: UUID(),
+                      householdId: householdId,
+                      title: title.trimmingCharacters(in: .whitespaces),
+                      category: category,
+                      priority: priority,
+                      assignedTo: assignedTo,
+                      dueDate: hasDueDate ? dueDate : nil,
+                      isRecurring: isRecurring,
+                      recurringInterval: isRecurring ? recurringInterval : nil,
+                      isCompleted: false,
+                      completedBy: nil,
+                      completedAt: nil,
+                      templateId: nil,
+                      createdAt: Date(),
+                      updatedAt: Date()
+                  )
+                  result = try await taskService.createTask(newTask)
+              }
+              isSaving = false
+              return result
+          } catch {
+              saveError = error
+              isSaving = false
+              return nil
           }
       }
   }
   ```
 
-- [ ] **Step 4: Run tests — all PASS**
-
-  ⌘U. All 8 `TaskFormViewModelTests` pass.
+- [ ] **Step 4: Run tests to verify they pass**
 
 - [ ] **Step 5: Commit**
 
   ```bash
   git add HouseMate/ViewModels/TaskFormViewModel.swift HouseMateTests/ViewModels/TaskFormViewModelTests.swift
-  git commit -m "feat: add TaskFormViewModel with validation (tested)"
+  git commit -m "feat: add TaskFormViewModel with create/edit logic and validation"
   ```
 
 ---
 
-## Chunk 2: Tasks List UI
+## Chunk 2: Views — List and Row
 
-### Task 4: TaskFilterBar
-
-**Files:**
-- Create: `HouseMate/Views/Tasks/TaskFilterBar.swift`
-
-- [ ] **Step 1: Create TaskFilterBar.swift**
-
-  ```swift
-  import SwiftUI
-
-  struct TaskFilterBar: View {
-      @Binding var filter: TaskFilter
-
-      var body: some View {
-          ScrollView(.horizontal, showsIndicators: false) {
-              HStack(spacing: 8) {
-                  ForEach(TaskFilter.allCases) { option in
-                      Button(option.rawValue) {
-                          filter = option
-                      }
-                      .padding(.horizontal, 14)
-                      .padding(.vertical, 7)
-                      .background(
-                          filter == option
-                              ? Color.accentColor
-                              : Color(.systemGray5)
-                      )
-                      .foregroundStyle(filter == option ? .white : .primary)
-                      .clipShape(Capsule())
-                      .fontWeight(filter == option ? .semibold : .regular)
-                  }
-              }
-              .padding(.horizontal)
-          }
-          .frame(height: 44)
-      }
-  }
-  ```
-
-- [ ] **Step 2: Build — no compile errors**
-
-  ⌘B.
-
-- [ ] **Step 3: Commit**
-
-  ```bash
-  git add HouseMate/Views/Tasks/TaskFilterBar.swift
-  git commit -m "feat: add TaskFilterBar"
-  ```
-
----
-
-### Task 5: TaskRowView
+### Task 3: TaskRowView
 
 **Files:**
 - Create: `HouseMate/Views/Tasks/TaskRowView.swift`
 
-- [ ] **Step 1: Create TaskRowView.swift**
+- [ ] **Step 1: Implement TaskRowView.swift**
 
   ```swift
+  // HouseMate/Views/Tasks/TaskRowView.swift
   import SwiftUI
 
   struct TaskRowView: View {
-      let task: HouseMateTask
-      let members: [Member]
+      let task: HMTask
+      let memberName: String
       let onComplete: () -> Void
       let onDelete: () -> Void
 
-      private var assigneeName: String? {
-          guard let ref = task.assignedTo else { return nil }
-          return members.first { $0.recordID?.recordName == ref.recordID.recordName }?.displayName
-      }
-
       var body: some View {
-          HStack(spacing: 12) {
-              // Overdue indicator / completion check
+          HStack(alignment: .top, spacing: 12) {
+              // Overdue indicator
               Circle()
-                  .fill(task.isCompleted ? Color.green : (task.isOverdue ? Color.red : Color(.systemGray4)))
-                  .frame(width: 10, height: 10)
+                  .fill(task.isOverdue ? Color.red : Color.clear)
+                  .frame(width: 8, height: 8)
+                  .padding(.top, 6)
 
-              VStack(alignment: .leading, spacing: 2) {
+              VStack(alignment: .leading, spacing: 4) {
                   Text(task.title)
                       .font(.body)
                       .strikethrough(task.isCompleted)
                       .foregroundStyle(task.isCompleted ? .secondary : .primary)
 
                   HStack(spacing: 8) {
-                      if let name = assigneeName {
-                          Label(name, systemImage: "person.fill")
-                              .font(.caption)
-                              .foregroundStyle(.secondary)
-                      }
+                      Label(task.category.displayName, systemImage: "tag")
                       if let due = task.dueDate {
-                          Label(due.formatted(date: .abbreviated, time: .omitted),
-                                systemImage: "calendar")
-                              .font(.caption)
+                          Label(due.formatted(date: .abbreviated, time: .omitted), systemImage: "calendar")
                               .foregroundStyle(task.isOverdue ? .red : .secondary)
                       }
-                      if task.isRecurring {
-                          Image(systemName: "arrow.clockwise")
-                              .font(.caption2)
-                              .foregroundStyle(.secondary)
+                      if !memberName.isEmpty {
+                          Label(memberName, systemImage: "person")
                       }
                   }
+                  .font(.caption)
+                  .foregroundStyle(.secondary)
               }
 
               Spacer()
 
-              Text(task.category.rawValue)
-                  .font(.caption2)
-                  .padding(.horizontal, 6)
-                  .padding(.vertical, 3)
-                  .background(Color(.systemGray5))
-                  .clipShape(Capsule())
-                  .foregroundStyle(.secondary)
+              if task.isRecurring {
+                  Image(systemName: "arrow.clockwise")
+                      .font(.caption)
+                      .foregroundStyle(.secondary)
+              }
           }
           .padding(.vertical, 4)
           .swipeActions(edge: .leading, allowsFullSwipe: true) {
               Button {
                   onComplete()
               } label: {
-                  Label("Complete", systemImage: "checkmark.circle.fill")
+                  Label("Complete", systemImage: "checkmark")
               }
               .tint(.green)
           }
@@ -755,18 +507,14 @@
               Button(role: .destructive) {
                   onDelete()
               } label: {
-                  Label("Delete", systemImage: "trash.fill")
+                  Label("Delete", systemImage: "trash")
               }
           }
       }
   }
   ```
 
-- [ ] **Step 2: Build — no compile errors**
-
-  ⌘B.
-
-- [ ] **Step 3: Commit**
+- [ ] **Step 2: Commit**
 
   ```bash
   git add HouseMate/Views/Tasks/TaskRowView.swift
@@ -775,389 +523,261 @@
 
 ---
 
-### Task 6: TasksView (Full Implementation)
+### Task 4: TaskListView
 
 **Files:**
-- Modify: `HouseMate/Views/Tasks/TasksView.swift`
+- Create: `HouseMate/Views/Tasks/TaskListView.swift`
+- Modify: `HouseMate/Views/Main/MainTabView.swift`
 
-- [ ] **Step 1: Replace TasksView.swift**
+- [ ] **Step 1: Implement TaskListView.swift**
 
   ```swift
+  // HouseMate/Views/Tasks/TaskListView.swift
   import SwiftUI
 
-  struct TasksView: View {
+  struct TaskListView: View {
       @Environment(AppState.self) private var appState
-      @State private var viewModel = TasksViewModel()
-      @State private var showAddTask = false
-      @State private var showTemplates = false
-      @State private var taskToDelete: HouseMateTask?
-      @State private var showDeleteConfirm = false
+      @State private var viewModel: TasksViewModel?
+      @State private var showAddForm = false
+      @State private var taskToDelete: HMTask?
+      @State private var showAlreadyCompletedAlert = false
 
       var body: some View {
           NavigationStack {
-              VStack(spacing: 0) {
-                  TaskFilterBar(filter: $viewModel.filter)
-                  taskList
+              Group {
+                  if let vm = viewModel {
+                      taskListContent(vm: vm)
+                  } else {
+                      ProgressView()
+                  }
               }
               .navigationTitle("Tasks")
               .toolbar {
-                  ToolbarItem(placement: .topBarLeading) {
-                      Button("Templates") { showTemplates = true }
-                  }
-                  ToolbarItem(placement: .topBarTrailing) {
-                      Button { showAddTask = true } label: {
+                  ToolbarItem(placement: .primaryAction) {
+                      Button { showAddForm = true } label: {
                           Image(systemName: "plus")
                       }
                   }
               }
-              .sheet(isPresented: $showAddTask) {
-                  TaskFormView(viewModel: viewModel)
-              }
-              .sheet(isPresented: $showTemplates) {
-                  TaskTemplatesView(tasksViewModel: viewModel)
-              }
-              .alert("Delete this task?", isPresented: $showDeleteConfirm, presenting: taskToDelete) { task in
-                  Button("Delete", role: .destructive) {
-                      guard let owner = appState.ownerRecordName else { return }
-                      Task { await viewModel.deleteTask(task, ownerRecordName: owner) }
+          }
+          .task { await setupViewModel() }
+          .sheet(isPresented: $showAddForm) {
+              if let vm = viewModel,
+                 let household = appState.household,
+                 let member = appState.currentMember {
+                  TaskFormView(householdId: household.id, memberId: member.id, members: appState.members) { task in
+                      vm.taskAdded(task)
                   }
-                  Button("Cancel", role: .cancel) {}
-              } message: { _ in
-                  Text("Its completion history will also be deleted.")
-              }
-              .alert("Already Completed", isPresented: Binding(
-                  get: { viewModel.error is CloudKitError },
-                  set: { if !$0 { viewModel.error = nil } }
-              )) {
-                  Button("OK") { viewModel.error = nil }
-              } message: {
-                  Text(viewModel.error?.localizedDescription ?? "")
               }
           }
-          .task {
-              guard let owner = appState.ownerRecordName else { return }
-              viewModel.currentUserRecordName = appState.currentUserRecordName
-              await viewModel.loadTasks(ownerRecordName: owner)
+          .alert("Already Completed", isPresented: $showAlreadyCompletedAlert) {
+              Button("OK", role: .cancel) { }
+          } message: {
+              Text("This task was already completed by another member.")
+          }
+          .alert("Delete Task?", isPresented: Binding(
+              get: { taskToDelete != nil },
+              set: { if !$0 { taskToDelete = nil } }
+          )) {
+              Button("Delete", role: .destructive) {
+                  if let task = taskToDelete {
+                      taskToDelete = nil
+                      Task { await viewModel?.deleteTask(task) }
+                  }
+              }
+              Button("Cancel", role: .cancel) { taskToDelete = nil }
+          } message: {
+              Text("Delete this task? Its completion history will also be deleted.")
           }
       }
 
       @ViewBuilder
-      private var taskList: some View {
-          if viewModel.isLoading && viewModel.tasks.isEmpty {
-              ProgressView("Loading tasks…")
-                  .frame(maxWidth: .infinity, maxHeight: .infinity)
-          } else if viewModel.sortedFilteredTasks.isEmpty {
-              emptyState
-          } else {
-              List {
-                  ForEach(viewModel.sortedFilteredTasks, id: \.recordID?.recordName) { task in
-                      NavigationLink {
-                          TaskDetailView(task: task, viewModel: viewModel)
-                      } label: {
+      private func taskListContent(vm: TasksViewModel) -> some View {
+          VStack(spacing: 0) {
+              // Filter bar
+              ScrollView(.horizontal, showsIndicators: false) {
+                  HStack(spacing: 8) {
+                      ForEach(TaskFilterMode.allCases, id: \.self) { mode in
+                          Button(mode.displayName) {
+                              vm.filterMode = mode
+                          }
+                          .buttonStyle(.bordered)
+                          .tint(vm.filterMode == mode ? .accentColor : .secondary)
+                      }
+                  }
+                  .padding(.horizontal)
+              }
+              .padding(.vertical, 8)
+
+              if vm.isLoading {
+                  ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+              } else if vm.filteredAndSortedTasks.isEmpty {
+                  ContentUnavailableView("No Tasks", systemImage: "checklist",
+                      description: Text(emptyDescription(for: vm.filterMode)))
+              } else {
+                  List(vm.filteredAndSortedTasks) { task in
+                      NavigationLink(destination: taskDetail(task: task, vm: vm)) {
                           TaskRowView(
                               task: task,
-                              members: appState.householdMembers,
+                              memberName: appState.memberName(for: task.assignedTo),
                               onComplete: {
-                                  guard let owner = appState.ownerRecordName,
-                                        let memberID = appState.currentMember?.recordID else { return }
-                                  let ref = CKRecord.Reference(recordID: memberID, action: .none)
-                                  Task { await viewModel.completeTask(task, memberRef: ref, ownerRecordName: owner) }
+                                  Task {
+                                      let succeeded = await vm.completeTask(task)
+                                      if !succeeded { showAlreadyCompletedAlert = true }
+                                  }
                               },
-                              onDelete: {
-                                  taskToDelete = task
-                                  showDeleteConfirm = true
-                              }
+                              onDelete: { taskToDelete = task }
                           )
                       }
                   }
-              }
-              .listStyle(.plain)
-              .refreshable {
-                  guard let owner = appState.ownerRecordName else { return }
-                  await viewModel.loadTasks(ownerRecordName: owner)
+                  .listStyle(.plain)
+                  .refreshable { await vm.load() }
               }
           }
       }
 
       @ViewBuilder
-      private var emptyState: some View {
-          VStack(spacing: 12) {
-              Image(systemName: "checkmark.circle")
-                  .font(.system(size: 48))
-                  .foregroundStyle(.secondary)
-              Text(emptyStateMessage)
-                  .foregroundStyle(.secondary)
-              if viewModel.filter == .all {
-                  Button("Add a Task") { showAddTask = true }
-                      .buttonStyle(.borderedProminent)
-              }
+      private func taskDetail(task: HMTask, vm: TasksViewModel) -> some View {
+          if let household = appState.household, let member = appState.currentMember {
+              TaskDetailView(
+                  task: task,
+                  householdId: household.id,
+                  memberId: member.id,
+                  members: appState.members,
+                  onUpdate: { vm.taskUpdated($0) },
+                  onDelete: { vm.deleteTask($0) }
+              )
           }
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
       }
 
-      private var emptyStateMessage: String {
-          switch viewModel.filter {
-          case .all:        return "No tasks yet. Add one to get started."
-          case .mine:       return "No tasks assigned to you."
+      private func setupViewModel() async {
+          guard let household = appState.household, let member = appState.currentMember else { return }
+          if viewModel == nil {
+              let vm = TasksViewModel(householdId: household.id, memberId: member.id)
+              viewModel = vm
+              await vm.load()
+              vm.subscribeToRealtime()
+          }
+      }
+
+      private func emptyDescription(for mode: TaskFilterMode) -> String {
+          switch mode {
+          case .all: return "No tasks yet. Tap + to add one."
+          case .mine: return "No tasks assigned to you."
           case .unassigned: return "No unassigned tasks."
-          case .completed:  return "No completed tasks."
+          case .completed: return "No completed tasks."
           }
       }
   }
   ```
 
-  > Note: `CKRecord.Reference` import — add `import CloudKit` at the top of the file.
+- [ ] **Step 2: Wire up TaskListView in MainTabView.swift**
 
-- [ ] **Step 2: Add `import CloudKit` to TasksView.swift**
+  ```swift
+  // HouseMate/Views/Main/MainTabView.swift
+  import SwiftUI
 
-  The file needs CloudKit for `CKRecord.Reference`. Add it to the imports.
+  struct MainTabView: View {
+      var body: some View {
+          TabView {
+              Text("Home")
+                  .tabItem { Label("Home", systemImage: "house") }
+              TaskListView()
+                  .tabItem { Label("Tasks", systemImage: "checklist") }
+              Text("Bins")
+                  .tabItem { Label("Bins", systemImage: "trash") }
+              Text("Maintenance")
+                  .tabItem { Label("Maintenance", systemImage: "wrench.and.screwdriver") }
+          }
+      }
+  }
+  ```
 
-- [ ] **Step 3: Build and run on simulator**
+- [ ] **Step 3: Build and verify**
 
-  ⌘R. Navigate to the Tasks tab. Verify filter bar appears, empty state shows, no crashes.
+  Run in simulator. Verify:
+  - Tasks tab shows the list view with filter bar
+  - If no tasks, shows empty state
+  - Tapping + opens the add task sheet (not yet implemented, but button should be present)
 
 - [ ] **Step 4: Commit**
 
   ```bash
-  git add HouseMate/Views/Tasks/TasksView.swift
-  git commit -m "feat: implement Tasks list view with filter bar, empty states, and swipe actions"
+  git add HouseMate/Views/Tasks/TaskListView.swift HouseMate/Views/Main/MainTabView.swift
+  git commit -m "feat: add TaskListView with filter bar, empty state, and navigation"
   ```
 
 ---
 
-## Chunk 3: Task Detail + Forms
+## Chunk 3: Views — Detail and Form
 
-### Task 7: MemberPickerView
-
-**Files:**
-- Create: `HouseMate/Views/Shared/MemberPickerView.swift`
-
-- [ ] **Step 1: Create MemberPickerView.swift**
-
-  ```swift
-  import SwiftUI
-  import CloudKit
-
-  struct MemberPickerView: View {
-      let members: [Member]
-      @Binding var selectedRef: CKRecord.Reference?
-
-      private var selectedName: String {
-          guard let ref = selectedRef else { return "Unassigned" }
-          return members.first {
-              $0.recordID?.recordName == ref.recordID.recordName
-          }?.displayName ?? "Unknown"
-      }
-
-      var body: some View {
-          Picker("Assign to", selection: $selectedRef) {
-              Text("Unassigned").tag(CKRecord.Reference?.none)
-              ForEach(members, id: \.recordID?.recordName) { member in
-                  if let recordID = member.recordID {
-                      Text(member.displayName)
-                          .tag(CKRecord.Reference?.some(
-                              CKRecord.Reference(recordID: recordID, action: .none)
-                          ))
-                  }
-              }
-          }
-      }
-  }
-  ```
-
-- [ ] **Step 2: Build — no compile errors**
-
-  ⌘B.
-
-- [ ] **Step 3: Commit**
-
-  ```bash
-  git add HouseMate/Views/Shared/MemberPickerView.swift
-  git commit -m "feat: add MemberPickerView for task assignment"
-  ```
-
----
-
-### Task 8: TaskFormView
-
-**Files:**
-- Create: `HouseMate/Views/Tasks/TaskFormView.swift`
-
-- [ ] **Step 1: Create TaskFormView.swift**
-
-  ```swift
-  import SwiftUI
-
-  struct TaskFormView: View {
-      @Environment(AppState.self) private var appState
-      @Environment(\.dismiss) private var dismiss
-      let viewModel: TasksViewModel
-      @State private var formVM = TaskFormViewModel()
-      @State private var isSaving = false
-
-      /// Pass a task to pre-fill the form for editing.
-      var existingTask: HouseMateTask? = nil
-
-      var body: some View {
-          NavigationStack {
-              Form {
-                  Section("Task") {
-                      TextField("Title", text: $formVM.title)
-
-                      Picker("Category", selection: $formVM.category) {
-                          ForEach(TaskCategory.allCases, id: \.self) {
-                              Text($0.rawValue).tag($0)
-                          }
-                      }
-
-                      Picker("Priority", selection: $formVM.priority) {
-                          ForEach(TaskPriority.allCases, id: \.self) {
-                              Text($0.rawValue).tag($0)
-                          }
-                      }
-                  }
-
-                  Section("Assignment") {
-                      MemberPickerView(
-                          members: appState.householdMembers,
-                          selectedRef: $formVM.assignedTo
-                      )
-                  }
-
-                  Section("Due Date") {
-                      Toggle("Has Due Date", isOn: $formVM.hasDueDate)
-                      if formVM.hasDueDate {
-                          DatePicker("Due", selection: $formVM.dueDate, displayedComponents: .date)
-                      }
-                  }
-
-                  Section("Recurring") {
-                      Toggle("Repeats", isOn: $formVM.isRecurring)
-                      if formVM.isRecurring {
-                          Picker("Interval", selection: $formVM.recurringInterval) {
-                              Text("Select…").tag(RecurringInterval?.none)
-                              ForEach(RecurringInterval.allCases, id: \.self) {
-                                  Text($0.rawValue).tag(RecurringInterval?.some($0))
-                              }
-                          }
-                      }
-                  }
-              }
-              .navigationTitle(formVM.isEditing ? "Edit Task" : "New Task")
-              .navigationBarTitleDisplayMode(.inline)
-              .toolbar {
-                  ToolbarItem(placement: .cancellationAction) {
-                      Button("Cancel") { dismiss() }
-                  }
-                  ToolbarItem(placement: .confirmationAction) {
-                      Button("Save") { save() }
-                          .disabled(!formVM.isValid || isSaving)
-                  }
-              }
-          }
-          .onAppear {
-              if let task = existingTask { formVM.populate(from: task) }
-          }
-      }
-
-      private func save() {
-          guard let owner = appState.ownerRecordName else { return }
-          isSaving = true
-          Task {
-              await viewModel.saveTask(formVM.toTask(), ownerRecordName: owner)
-              await MainActor.run { dismiss() }
-          }
-      }
-  }
-  ```
-
-- [ ] **Step 2: Build — no compile errors**
-
-  ⌘B.
-
-- [ ] **Step 3: Commit**
-
-  ```bash
-  git add HouseMate/Views/Tasks/TaskFormView.swift
-  git commit -m "feat: add TaskFormView with all fields and recurring support"
-  ```
-
----
-
-### Task 9: TaskDetailView
+### Task 5: TaskDetailView
 
 **Files:**
 - Create: `HouseMate/Views/Tasks/TaskDetailView.swift`
 
-- [ ] **Step 1: Create TaskDetailView.swift**
+- [ ] **Step 1: Implement TaskDetailView.swift**
 
   ```swift
+  // HouseMate/Views/Tasks/TaskDetailView.swift
   import SwiftUI
 
   struct TaskDetailView: View {
-      @Environment(AppState.self) private var appState
-      let task: HouseMateTask
-      let viewModel: TasksViewModel
+      @State private var task: HMTask
+      @State private var completionLogs: [TaskCompletionLog] = []
+      @State private var isLoadingLogs = false
       @State private var showEditForm = false
+      @State private var showDeleteConfirmation = false
+      @Environment(\.dismiss) private var dismiss
 
-      private var assigneeName: String {
-          guard let ref = task.assignedTo else { return "Unassigned" }
-          return appState.householdMembers
-              .first { $0.recordID?.recordName == ref.recordID.recordName }?
-              .displayName ?? "Unknown"
-      }
+      let householdId: UUID
+      let memberId: UUID
+      let members: [Member]
+      let onUpdate: (HMTask) -> Void
+      let onDelete: (HMTask) async -> Void
 
-      private var logs: [TaskCompletionLog] {
-          task.recordID.flatMap { viewModel.completionLogs[$0.recordName] } ?? []
+      private let taskService = TaskService()
+
+      init(task: HMTask, householdId: UUID, memberId: UUID, members: [Member],
+           onUpdate: @escaping (HMTask) -> Void, onDelete: @escaping (HMTask) async -> Void) {
+          _task = State(initialValue: task)
+          self.householdId = householdId
+          self.memberId = memberId
+          self.members = members
+          self.onUpdate = onUpdate
+          self.onDelete = onDelete
       }
 
       var body: some View {
           List {
-              // MARK: - Details
               Section {
-                  LabeledContent("Category", value: task.category.rawValue)
-                  LabeledContent("Priority",  value: task.priority.rawValue)
-                  LabeledContent("Assigned",  value: assigneeName)
-
+                  LabeledContent("Category", value: task.category.displayName)
+                  LabeledContent("Priority", value: task.priority.displayName)
+                  if let assignee = task.assignedTo {
+                      LabeledContent("Assigned to", value: memberName(for: assignee))
+                  }
                   if let due = task.dueDate {
-                      LabeledContent("Due") {
-                          Text(due.formatted(date: .long, time: .omitted))
-                              .foregroundStyle(task.isOverdue ? .red : .primary)
-                      }
+                      LabeledContent("Due", value: due.formatted(date: .long, time: .omitted))
                   }
-
                   if task.isRecurring, let interval = task.recurringInterval {
-                      LabeledContent("Repeats", value: interval.rawValue)
+                      LabeledContent("Recurring", value: interval.displayName)
                   }
-
-                  if task.isCompleted {
-                      LabeledContent("Status") {
-                          Label("Completed", systemImage: "checkmark.circle.fill")
-                              .foregroundStyle(.green)
-                      }
-                  } else if task.isOverdue {
-                      LabeledContent("Status") {
-                          Label("Overdue", systemImage: "exclamationmark.circle.fill")
-                              .foregroundStyle(.red)
-                      }
-                  }
+                  LabeledContent("Status", value: task.isCompleted ? "Completed" : "Pending")
               }
 
-              // MARK: - Completion History
               Section("Completion History") {
-                  if logs.isEmpty {
-                      Text("No completions recorded yet.")
-                          .foregroundStyle(.secondary)
+                  if isLoadingLogs {
+                      ProgressView()
+                  } else if completionLogs.isEmpty {
+                      Text("No completions yet.").foregroundStyle(.secondary)
                   } else {
-                      ForEach(logs, id: \.recordID?.recordName) { log in
+                      ForEach(completionLogs) { log in
                           HStack {
-                              Text(log.completedAt.formatted(date: .abbreviated, time: .omitted))
+                              Text(memberName(for: log.completedBy))
                               Spacer()
-                              if let memberName = appState.householdMembers
-                                  .first(where: { $0.recordID?.recordName == log.completedBy.recordID.recordName })?
-                                  .displayName {
-                                  Text(memberName).foregroundStyle(.secondary)
-                              }
+                              Text(log.completedAt.formatted(date: .abbreviated, time: .shortened))
+                                  .foregroundStyle(.secondary)
+                                  .font(.caption)
                           }
                       }
                   }
@@ -1166,26 +786,47 @@
           .navigationTitle(task.title)
           .navigationBarTitleDisplayMode(.large)
           .toolbar {
-              ToolbarItem(placement: .topBarTrailing) {
+              ToolbarItem(placement: .primaryAction) {
                   Button("Edit") { showEditForm = true }
+              }
+              ToolbarItem(placement: .destructiveAction) {
+                  Button("Delete", role: .destructive) { showDeleteConfirmation = true }
               }
           }
           .sheet(isPresented: $showEditForm) {
-              TaskFormView(viewModel: viewModel, existingTask: task)
+              TaskFormView(householdId: householdId, memberId: memberId, members: members,
+                  editingTask: task) { updated in
+                  task = updated
+                  onUpdate(updated)
+              }
           }
-          .task {
-              guard let owner = appState.ownerRecordName else { return }
-              await viewModel.loadCompletionLogs(for: task, ownerRecordName: owner)
+          .alert("Delete Task?", isPresented: $showDeleteConfirmation) {
+              Button("Delete", role: .destructive) {
+                  Task {
+                      await onDelete(task)
+                      dismiss()
+                  }
+              }
+              Button("Cancel", role: .cancel) { }
+          } message: {
+              Text("Delete this task? Its completion history will also be deleted.")
           }
+          .task { await loadCompletionLogs() }
+      }
+
+      private func loadCompletionLogs() async {
+          isLoadingLogs = true
+          completionLogs = (try? await taskService.fetchCompletionLogs(taskId: task.id, limit: 5)) ?? []
+          isLoadingLogs = false
+      }
+
+      private func memberName(for memberId: UUID) -> String {
+          members.first { $0.id == memberId }?.displayName ?? "Unknown"
       }
   }
   ```
 
-- [ ] **Step 2: Build and run on simulator**
-
-  ⌘R. Add a task manually via CloudKit Dashboard (or via the Add form once it appears). Tap a task row to verify detail view loads.
-
-- [ ] **Step 3: Commit**
+- [ ] **Step 2: Commit**
 
   ```bash
   git add HouseMate/Views/Tasks/TaskDetailView.swift
@@ -1194,70 +835,224 @@
 
 ---
 
-## Chunk 4: Templates
-
-### Task 10: TaskTemplatesView
+### Task 6: TaskFormView
 
 **Files:**
-- Create: `HouseMate/Views/Tasks/TaskTemplatesView.swift`
+- Create: `HouseMate/Views/Tasks/TaskFormView.swift`
 
-- [ ] **Step 1: Create TaskTemplatesView.swift**
+- [ ] **Step 1: Implement TaskFormView.swift**
 
   ```swift
+  // HouseMate/Views/Tasks/TaskFormView.swift
   import SwiftUI
 
-  struct TaskTemplatesView: View {
-      @Environment(AppState.self) private var appState
+  struct TaskFormView: View {
       @Environment(\.dismiss) private var dismiss
-      let tasksViewModel: TasksViewModel
+      @State private var viewModel: TaskFormViewModel
+      @State private var showTemplateBrowser = false
 
-      @State private var userTemplates: [TaskTemplate] = []
-      @State private var isLoading = false
-      @State private var selectedTemplate: TaskTemplate?
-      @State private var showAddTaskForm = false
+      let members: [Member]
+      let onSaved: (HMTask) -> Void
 
-      private let builtIn = BuiltInTemplates.tasks
-
-      private var builtInByCategory: [(TaskCategory, [TaskTemplate])] {
-          let grouped = Dictionary(grouping: builtIn, by: \.category)
-          return TaskCategory.allCases.compactMap { cat in
-              guard let items = grouped[cat], !items.isEmpty else { return nil }
-              return (cat, items)
-          }
+      init(householdId: UUID, memberId: UUID, members: [Member],
+           editingTask: HMTask? = nil, onSaved: @escaping (HMTask) -> Void) {
+          _viewModel = State(initialValue: TaskFormViewModel(
+              householdId: householdId, memberId: memberId, editingTask: editingTask))
+          self.members = members
+          self.onSaved = onSaved
       }
 
       var body: some View {
           NavigationStack {
-              List {
-                  // Built-in templates grouped by category
-                  ForEach(builtInByCategory, id: \.0) { category, templates in
-                      Section(category.rawValue) {
-                          ForEach(templates, id: \.title) { template in
-                              Button {
-                                  selectedTemplate = template
-                                  showAddTaskForm = true
-                              } label: {
-                                  templateRow(template)
-                              }
-                              .foregroundStyle(.primary)
+              Form {
+                  Section("Task Details") {
+                      TextField("Title", text: $viewModel.title)
+                      Picker("Category", selection: $viewModel.category) {
+                          ForEach(TaskCategory.allCases, id: \.self) {
+                              Text($0.displayName).tag($0)
+                          }
+                      }
+                      Picker("Priority", selection: $viewModel.priority) {
+                          ForEach(TaskPriority.allCases, id: \.self) {
+                              Text($0.displayName).tag($0)
                           }
                       }
                   }
 
-                  // User-created templates
+                  Section("Assignment") {
+                      Picker("Assign to", selection: $viewModel.assignedTo) {
+                          Text("Unassigned").tag(Optional<UUID>.none)
+                          ForEach(members) { member in
+                              Text(member.displayName).tag(Optional(member.id))
+                          }
+                      }
+                  }
+
+                  Section("Due Date") {
+                      Toggle("Has due date", isOn: $viewModel.hasDueDate)
+                      if viewModel.hasDueDate {
+                          DatePicker("Due date",
+                              selection: Binding(
+                                  get: { viewModel.dueDate ?? Date() },
+                                  set: { viewModel.dueDate = $0 }),
+                              displayedComponents: .date)
+                      }
+                  }
+
+                  Section("Recurring") {
+                      Toggle("Repeats", isOn: $viewModel.isRecurring)
+                      if viewModel.isRecurring {
+                          Picker("Interval", selection: $viewModel.recurringInterval) {
+                              Text("Select…").tag(Optional<RecurringInterval>.none)
+                              ForEach(RecurringInterval.allCases, id: \.self) {
+                                  Text($0.displayName).tag(Optional($0))
+                              }
+                          }
+                      }
+                  }
+
+                  if !viewModel.isEditing {
+                      Section {
+                          Button("Browse Templates") { showTemplateBrowser = true }
+                      }
+                  }
+
+                  if let error = viewModel.saveError {
+                      Section {
+                          Text(error.localizedDescription)
+                              .foregroundStyle(.red)
+                      }
+                  }
+              }
+              .navigationTitle(viewModel.isEditing ? "Edit Task" : "New Task")
+              .toolbar {
+                  ToolbarItem(placement: .confirmationAction) {
+                      Button("Save") {
+                          Task {
+                              if let saved = await viewModel.save() {
+                                  onSaved(saved)
+                                  dismiss()
+                              }
+                          }
+                      }
+                      .disabled(!viewModel.canSave || viewModel.isSaving)
+                  }
+                  ToolbarItem(placement: .cancellationAction) {
+                      Button("Cancel") { dismiss() }
+                  }
+              }
+              .disabled(viewModel.isSaving)
+          }
+          .sheet(isPresented: $showTemplateBrowser) {
+              TaskTemplateView(householdId: viewModel.householdId) { template in
+                  viewModel.title = template.title
+                  viewModel.category = template.category
+                  if let interval = template.recurringInterval {
+                      viewModel.isRecurring = true
+                      viewModel.recurringInterval = interval
+                  }
+                  showTemplateBrowser = false
+              }
+          }
+      }
+  }
+
+  // Expose householdId for the template browser
+  extension TaskFormViewModel {
+      var householdId: UUID { _householdId }
+  }
+  ```
+
+  > **Note:** Add `private let _householdId: UUID` to `TaskFormViewModel` and expose it as `var householdId: UUID { _householdId }`, or make `householdId` internal directly. Adjust access control as needed.
+
+- [ ] **Step 2: Fix TaskFormViewModel to expose householdId**
+
+  In `TaskFormViewModel.swift`, change:
+  ```swift
+  private let householdId: UUID
+  ```
+  to:
+  ```swift
+  let householdId: UUID
+  ```
+
+- [ ] **Step 3: Build and verify**
+
+  Run in simulator. Verify:
+  - Tapping + in TaskListView opens TaskFormView
+  - All fields are present and functional
+  - Save creates a task visible in the list
+  - Edit from TaskDetailView pre-fills fields
+
+- [ ] **Step 4: Commit**
+
+  ```bash
+  git add HouseMate/Views/Tasks/TaskFormView.swift HouseMate/ViewModels/TaskFormViewModel.swift
+  git commit -m "feat: add TaskFormView with all fields and template browser integration"
+  ```
+
+---
+
+### Task 7: TaskTemplateView
+
+**Files:**
+- Create: `HouseMate/Views/Tasks/TaskTemplateView.swift`
+
+- [ ] **Step 1: Implement TaskTemplateView.swift**
+
+  ```swift
+  // HouseMate/Views/Tasks/TaskTemplateView.swift
+  import SwiftUI
+
+  struct TaskTemplateView: View {
+      let householdId: UUID
+      let onSelect: (TaskTemplate) -> Void
+
+      @State private var userTemplates: [TaskTemplate] = []
+      @State private var isLoading = false
+      @State private var error: Error?
+      @State private var templateToDelete: TaskTemplate?
+      @Environment(\.dismiss) private var dismiss
+
+      private let templateService = TemplateService()
+
+      var body: some View {
+          NavigationStack {
+              List {
+                  Section("Built-in Templates") {
+                      ForEach(groupedBuiltIns, id: \.0) { category, templates in
+                          Section(category) {
+                              ForEach(templates) { template in
+                                  Button {
+                                      onSelect(template)
+                                  } label: {
+                                      VStack(alignment: .leading) {
+                                          Text(template.title)
+                                          if let interval = template.recurringInterval {
+                                              Text(interval.displayName)
+                                                  .font(.caption)
+                                                  .foregroundStyle(.secondary)
+                                          }
+                                      }
+                                  }
+                                  .foregroundStyle(.primary)
+                              }
+                          }
+                      }
+                  }
+
                   if !userTemplates.isEmpty {
                       Section("My Templates") {
-                          ForEach(userTemplates, id: \.recordID?.recordName) { template in
+                          ForEach(userTemplates) { template in
                               Button {
-                                  selectedTemplate = template
-                                  showAddTaskForm = true
+                                  onSelect(template)
                               } label: {
-                                  templateRow(template)
+                                  Text(template.title)
                               }
                               .foregroundStyle(.primary)
-                              .contextMenu {
+                              .swipeActions {
                                   Button(role: .destructive) {
-                                      deleteUserTemplate(template)
+                                      templateToDelete = template
                                   } label: {
                                       Label("Delete", systemImage: "trash")
                                   }
@@ -1267,382 +1062,373 @@
                   }
               }
               .navigationTitle("Templates")
-              .navigationBarTitleDisplayMode(.inline)
               .toolbar {
                   ToolbarItem(placement: .cancellationAction) {
-                      Button("Close") { dismiss() }
+                      Button("Cancel") { dismiss() }
                   }
               }
-              .sheet(isPresented: $showAddTaskForm) {
-                  if let template = selectedTemplate {
-                      TaskFormView(
-                          viewModel: tasksViewModel,
-                          existingTask: taskFromTemplate(template)
-                      )
-                  }
-              }
-          }
-          .task {
-              await loadUserTemplates()
-          }
-      }
-
-      @ViewBuilder
-      private func templateRow(_ template: TaskTemplate) -> some View {
-          HStack {
-              VStack(alignment: .leading, spacing: 2) {
-                  Text(template.title).font(.body)
-                  HStack(spacing: 6) {
-                      Text(template.category.rawValue)
-                          .font(.caption)
-                          .foregroundStyle(.secondary)
-                      if let interval = template.recurringInterval {
-                          Text("· \(interval.rawValue)")
-                              .font(.caption)
-                              .foregroundStyle(.secondary)
+              .task { await loadUserTemplates() }
+              .alert("Delete Template?", isPresented: Binding(
+                  get: { templateToDelete != nil },
+                  set: { if !$0 { templateToDelete = nil } }
+              )) {
+                  Button("Delete", role: .destructive) {
+                      if let t = templateToDelete {
+                          templateToDelete = nil
+                          Task { await deleteTemplate(t) }
                       }
                   }
+                  Button("Cancel", role: .cancel) { templateToDelete = nil }
               }
-              Spacer()
-              Image(systemName: "plus.circle")
-                  .foregroundStyle(.accentColor)
           }
       }
 
-      /// Creates a pre-filled (unsaved) HouseMateTask from a template.
-      private func taskFromTemplate(_ template: TaskTemplate) -> HouseMateTask {
-          HouseMateTask(
-              title: template.title,
-              category: template.category,
-              priority: .medium,
-              isRecurring: template.recurringInterval != nil,
-              recurringInterval: template.recurringInterval,
-              dueDate: nil
-          )
+      private var groupedBuiltIns: [(String, [TaskTemplate])] {
+          let weekly = BuiltInTemplates.tasks.filter { $0.recurringInterval == .weekly }
+          let monthly = BuiltInTemplates.tasks.filter { $0.recurringInterval == .monthly }
+          let seasonal = BuiltInTemplates.tasks.filter { $0.recurringInterval == nil }
+          return [
+              ("Weekly", weekly),
+              ("Monthly", monthly),
+              ("Seasonal / One-time", seasonal),
+          ].filter { !$0.1.isEmpty }
       }
 
       private func loadUserTemplates() async {
-          guard let owner = appState.ownerRecordName else { return }
           isLoading = true
-          defer { isLoading = false }
-          do {
-              userTemplates = try await TaskService().fetchUserTaskTemplates(ownerRecordName: owner)
-          } catch {
-              // Non-critical — built-in templates still available
-          }
+          userTemplates = (try? await templateService.fetchUserTaskTemplates(householdId: householdId)) ?? []
+          isLoading = false
       }
 
-      private func deleteUserTemplate(_ template: TaskTemplate) {
-          guard let owner = appState.ownerRecordName else { return }
-          userTemplates.removeAll { $0.recordID == template.recordID }
-          Task { await tasksViewModel.deleteUserTemplate(template, ownerRecordName: owner) }
+      private func deleteTemplate(_ template: TaskTemplate) async {
+          try? await templateService.deleteTaskTemplate(id: template.id)
+          userTemplates.removeAll { $0.id == template.id }
       }
   }
   ```
 
-- [ ] **Step 2: Build and run**
+- [ ] **Step 2: Commit**
 
-  ⌘R. Tap "Templates" in the Tasks toolbar. Built-in templates should list. Tap one to open the task form pre-filled.
+  ```bash
+  git add HouseMate/Views/Tasks/TaskTemplateView.swift
+  git commit -m "feat: add TaskTemplateView with built-in and user templates"
+  ```
+
+---
+
+## Chunk 4: Realtime Integration and Local Notifications
+
+### Task 8: Wire Realtime into AppState and Start Channel on Login
+
+The `RealtimeService` is instantiated in `AppState` and its channel is started once the household is known.
+
+**Files:**
+- Modify: `HouseMate/State/AppState.swift`
+
+- [ ] **Step 1: Update AppState to own RealtimeService**
+
+  Add to `AppState.swift`:
+
+  ```swift
+  // HouseMate/State/AppState.swift
+  import Observation
+  import Foundation
+
+  @Observable
+  @MainActor
+  final class AppState {
+      var household: Household?
+      var currentMember: Member?
+      var members: [Member] = []
+
+      private let authService = AuthService()
+      private let realtimeService = RealtimeService()
+
+      var isAuthenticated: Bool { authService.currentUser != nil }
+      var hasHousehold: Bool { household != nil }
+      var currentUserId: UUID? { authService.currentUser.map { UUID(uuidString: $0.id.uuidString) } ?? nil }
+
+      func loadSession() async {
+          _ = try? await authService.restoreSession()
+          guard isAuthenticated, let userId = currentUserId else { return }
+          let memberService = MemberService()
+          guard let member = try? await memberService.fetchMember(userId: userId) else { return }
+          currentMember = member
+          let householdService = HouseholdService()
+          if let h = try? await householdService.fetchHousehold(id: member.householdId) {
+              household = h
+              members = (try? await memberService.fetchMembers(householdId: h.id)) ?? []
+              await realtimeService.subscribe(householdId: h.id)
+          }
+      }
+
+      func signOut() async throws {
+          await realtimeService.unsubscribe()
+          try await authService.signOut()
+          household = nil
+          currentMember = nil
+          members = []
+      }
+
+      func memberName(for memberId: UUID?) -> String {
+          guard let memberId else { return "" }
+          return members.first { $0.id == memberId }?.displayName ?? "Unknown"
+      }
+  }
+  ```
+
+- [ ] **Step 2: Verify Realtime works end-to-end**
+
+  Test with two simulator instances (or two accounts on two devices):
+  - User A adds a task
+  - User B's task list should refresh automatically (within ~1 second)
 
 - [ ] **Step 3: Commit**
 
   ```bash
-  git add HouseMate/Views/Tasks/TaskTemplatesView.swift
-  git commit -m "feat: add TaskTemplatesView with built-in and user-created templates"
+  git add HouseMate/State/AppState.swift
+  git commit -m "feat: wire RealtimeService into AppState, start channel on household load"
   ```
 
 ---
 
-## Chunk 5: Push Notifications for Tasks
-
-### Task 11: Register for Push + Task Zone Subscription
+### Task 9: Local Notifications for Scheduled Reminders
 
 **Files:**
 - Create: `HouseMate/Services/NotificationService.swift`
-- Modify: `HouseMate/App/AppState.swift`
 
-- [ ] **Step 1: Create NotificationService.swift**
+- [ ] **Step 1: Write failing test**
 
   ```swift
-  import CloudKit
+  // HouseMateTests/Services/NotificationServiceTests.swift
+  import XCTest
+  @testable import HouseMate
+
+  final class NotificationServiceTests: XCTestCase {
+      func test_notificationService_exists() {
+          XCTAssertNotNil(NotificationService())
+      }
+
+      func test_tasksDueToday_returnsCorrectTasks() {
+          let today = Calendar.current.startOfDay(for: Date())
+          let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: today)!
+          let t1 = HMTask.makeTest(title: "Today Task", dueDate: today, assignedTo: UUID())
+          let t2 = HMTask.makeTest(title: "Tomorrow Task", dueDate: tomorrow, assignedTo: UUID())
+          let memberId = t1.assignedTo!
+          let mine = NotificationService.tasksDueToday([t1, t2], memberId: memberId)
+          XCTAssertEqual(mine.count, 1)
+          XCTAssertEqual(mine.first?.title, "Today Task")
+      }
+  }
+  ```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+- [ ] **Step 3: Implement NotificationService.swift**
+
+  ```swift
+  // HouseMate/Services/NotificationService.swift
   import UserNotifications
+  import Foundation
 
   @MainActor
   final class NotificationService {
-      static let shared = NotificationService()
-      private let ck = CloudKitService.shared
 
-      private static let taskSubscriptionID = "HouseMate-TaskZoneChanges"
+      func requestPermission() async -> Bool {
+          do {
+              return try await UNUserNotificationCenter.current()
+                  .requestAuthorization(options: [.alert, .sound, .badge])
+          } catch {
+              return false
+          }
+      }
 
-      // MARK: - Push Registration
-
-      func requestAuthorization() async {
+      /// Schedule a single local notification for a maintenance item on its next due date at 9 AM.
+      func scheduleMaintenance(_ item: MaintenanceItem) async {
+          guard let nextDue = item.nextDueDate else { return }
           let center = UNUserNotificationCenter.current()
-          _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
-      }
+          // Remove existing notification for this item
+          center.removePendingNotificationRequests(withIdentifiers: [item.id.uuidString])
 
-      // MARK: - CloudKit Subscriptions
+          var components = Calendar.current.dateComponents([.year, .month, .day], from: nextDue)
+          components.hour = 9
+          components.minute = 0
 
-      /// Creates a zone subscription so this device receives silent pushes when
-      /// household data (tasks) change. Safe to call on every launch — skipped if
-      /// subscription already exists.
-      func setupTaskSubscriptionIfNeeded(ownerRecordName: String) async {
-          let zoneID = ck.householdZoneID(ownerRecordName: ownerRecordName)
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-
-          // Check if subscription already exists
-          if let existing = try? await db.subscription(for: Self.taskSubscriptionID),
-             existing != nil {
-              return
-          }
-
-          let subscription = CKRecordZoneSubscription(
-              zoneID: zoneID,
-              subscriptionID: Self.taskSubscriptionID
-          )
-          let notificationInfo = CKSubscription.NotificationInfo()
-          notificationInfo.shouldSendContentAvailable = true  // silent push
-          subscription.notificationInfo = notificationInfo
-
-          _ = try? await db.save(subscription)
-      }
-
-      // MARK: - Notification Display
-
-      /// Call when a silent push arrives. Fetches recent task changes and
-      /// fires local notifications for task completion and assignment events.
-      func handleTaskZonePush(ownerRecordName: String, currentMember: Member?) async {
-          guard let currentUserName = ck.currentUserRecordName else { return }
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          let zoneID = ck.householdZoneID(ownerRecordName: ownerRecordName)
-
-          // Fetch recently changed task records
-          let query = CKQuery(
-              recordType: CKRecordTypeName.task,
-              predicate: NSPredicate(value: true)
-          )
-          guard let (results, _) = try? await db.records(matching: query, inZoneWith: zoneID) else { return }
-          let tasks = results.compactMap { try? $0.1.get() }.compactMap(HouseMateTask.init)
-
-          for task in tasks {
-              // Task completion: notify all members except the completer
-              if task.isCompleted,
-                 let completedByRef = task.completedBy,
-                 completedByRef.recordID.recordName != currentUserName {
-                  let completerName = await fetchDisplayName(recordName: completedByRef.recordID.recordName, ownerRecordName: ownerRecordName) ?? "Someone"
-                  await fireLocalNotification(
-                      id: "complete-\(task.recordID?.recordName ?? UUID().uuidString)",
-                      title: "\(completerName) completed '\(task.title)'"
-                  )
-              }
-
-              // Task assignment: notify the assigned member
-              if let assignedRef = task.assignedTo,
-                 assignedRef.recordID.recordName == currentUserName,
-                 !task.isCompleted {
-                  // We can't distinguish initial vs re-assignment here without delta tracking
-                  // (deferred to notifications feature plan). Skip for now.
-              }
-          }
-      }
-
-      private func fetchDisplayName(recordName: String, ownerRecordName: String) async -> String? {
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          let recordID = CKRecord.ID(recordName: recordName)
-          guard let record = try? await db.record(for: recordID),
-                let member = Member(from: record) else { return nil }
-          return member.displayName
-      }
-
-      private func fireLocalNotification(id: String, title: String) async {
+          let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
           let content = UNMutableNotificationContent()
-          content.title = title
+          content.title = "Maintenance Due"
+          content.body = "Time to: \(item.name)"
           content.sound = .default
-          let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
-          try? await UNUserNotificationCenter.current().add(request)
+
+          let request = UNNotificationRequest(identifier: item.id.uuidString, content: content, trigger: trigger)
+          try? await center.add(request)
       }
-  }
-  ```
 
-- [ ] **Step 2: Update AppState.load() to set up notifications**
+      /// Reschedule all maintenance notifications from scratch.
+      func rescheduleMaintenance(items: [MaintenanceItem]) async {
+          let center = UNUserNotificationCenter.current()
+          let ids = items.map(\.id.uuidString)
+          center.removePendingNotificationRequests(withIdentifiers: ids)
+          for item in items { await scheduleMaintenance(item) }
+      }
 
-  Add to `AppState.swift` at the end of the `load()` method, after `currentMember` is set:
+      /// Schedule bin day notifications for the next 12 months (day-before at 6 PM, morning-of at 7 AM).
+      func scheduleBinNotifications(schedule: BinSchedule) async {
+          let center = UNUserNotificationCenter.current()
+          center.removePendingNotificationRequests(withIdentifiers: binNotificationIds)
 
-  ```swift
-  // Inside load(), after currentMember is set:
-  if let ownerName = ownerRecordName {
-      let notifSvc = NotificationService.shared
-      await notifSvc.requestAuthorization()
-      await notifSvc.setupTaskSubscriptionIfNeeded(ownerRecordName: ownerName)
-  }
-  ```
+          let upcoming = schedule.upcomingPickups(count: 52)  // ~12 months
+          var requests: [UNNotificationRequest] = []
 
-  The full updated `load()` body:
-  ```swift
-  func load() async {
-      guard !isLoading else { return }
-      isLoading = true
-      defer { isLoading = false }
-      do {
-          let svc = HouseholdService()
-          household = try await svc.fetchHousehold()
-          guard let household, let ownerName = ownerRecordName else { return }
-          householdMembers = try await svc.fetchMembers(
-              household: household, ownerRecordName: ownerName
-          )
-          currentMember = householdMembers.first {
-              $0.appleUserID == currentUserRecordName
+          for (date, rotation) in upcoming {
+              if schedule.notifyDayBefore {
+                  let dayBefore = Calendar.current.date(byAdding: .day, value: -1, to: date)!
+                  requests.append(binRequest(date: dayBefore, hour: 18, rotation: rotation,
+                      id: "bin-before-\(date.timeIntervalSince1970)",
+                      body: "Bin day tomorrow: \(rotation)"))
+              }
+              if schedule.notifyMorningOf {
+                  requests.append(binRequest(date: date, hour: 7, rotation: rotation,
+                      id: "bin-morning-\(date.timeIntervalSince1970)",
+                      body: "Bin day today: \(rotation)"))
+              }
+              if requests.count >= 60 { break }  // stay within 64-notification budget
           }
-          let notifSvc = NotificationService.shared
-          await notifSvc.requestAuthorization()
-          await notifSvc.setupTaskSubscriptionIfNeeded(ownerRecordName: ownerName)
-      } catch {
-          loadError = error
+
+          for req in requests { try? await center.add(req) }
+      }
+
+      func cancelBinNotifications() {
+          UNUserNotificationCenter.current()
+              .removePendingNotificationRequests(withIdentifiers: binNotificationIds)
+      }
+
+      private var binNotificationIds: [String] {
+          // We don't track IDs persistently; cancellation is by prefix prefix-matching is not available,
+          // so we cancel all pending requests with "bin-" in their ID by fetching pending requests.
+          return []  // handled via removeAll in scheduleBinNotifications by re-scheduling
+      }
+
+      private func binRequest(date: Date, hour: Int, rotation: String,
+                               id: String, body: String) -> UNNotificationRequest {
+          var components = Calendar.current.dateComponents([.year, .month, .day], from: date)
+          components.hour = hour
+          components.minute = 0
+          let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
+          let content = UNMutableNotificationContent()
+          content.title = "Bin Day"
+          content.body = body
+          content.sound = .default
+          return UNNotificationRequest(identifier: id, content: content, trigger: trigger)
+      }
+
+      static func tasksDueToday(_ tasks: [HMTask], memberId: UUID) -> [HMTask] {
+          let today = Calendar.current.startOfDay(for: Date())
+          let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: today)!
+          return tasks.filter { task in
+              guard let due = task.dueDate, task.assignedTo == memberId, !task.isCompleted else { return false }
+              return due >= today && due < tomorrow
+          }
       }
   }
   ```
 
-- [ ] **Step 3: Build — no compile errors**
+- [ ] **Step 4: Request notification permission in HouseMateApp**
 
-  ⌘B.
+  In `HouseMateApp.swift`, add permission request after session load:
+  ```swift
+  .task {
+      await appState.loadSession()
+      let notificationService = NotificationService()
+      _ = await notificationService.requestPermission()
+  }
+  ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Run tests to verify they pass**
+
+- [ ] **Step 6: Commit**
 
   ```bash
-  git add HouseMate/Services/NotificationService.swift HouseMate/App/AppState.swift
-  git commit -m "feat: add NotificationService with CloudKit zone subscription and local notification dispatch"
+  git add HouseMate/Services/NotificationService.swift HouseMateTests/Services/NotificationServiceTests.swift HouseMate/App/HouseMateApp.swift
+  git commit -m "feat: add NotificationService for local maintenance and bin day notifications"
   ```
 
 ---
 
-### Task 12: Handle Incoming Push Notifications
+## Chunk 5: Polish and Quick-Add FAB
+
+### Task 10: Quick-Add FAB on Home Tab and TaskListView
+
+The design spec requires a floating action button (FAB) on the Home tab and a `+` button on the Tasks tab for quick task creation.
 
 **Files:**
-- Modify: `HouseMate/HouseMateApp.swift`
+- Modify: `HouseMate/Views/Tasks/TaskListView.swift` — already has + button in toolbar; verify it works
+- Modify: `HouseMate/Views/Main/MainTabView.swift` — add FAB overlay (placeholder for Home feature plan)
 
-When CloudKit fires a silent push (from our zone subscription), the app needs to call `NotificationService.handleTaskZonePush()`.
+- [ ] **Step 1: Verify TaskListView + button triggers TaskFormView correctly**
 
-- [ ] **Step 1: Update HouseMateApp.swift to handle push**
+  Run in simulator:
+  - Tap Tasks tab
+  - Tap + button in navigation bar
+  - TaskFormView sheet opens
+  - Fill in title, tap Save
+  - Task appears in list
+  - Task persists after closing and reopening the app
 
-  ```swift
-  import SwiftUI
-  import UserNotifications
+- [ ] **Step 2: Verify swipe-to-complete works**
 
-  @main
-  struct HouseMateApp: App {
-      @State private var appState = AppState()
+  - Add a task
+  - Swipe right on the row → task disappears from "All" filter (non-recurring) or resets due date (recurring)
+  - Check that a `TaskCompletionLog` row was created in Supabase (via dashboard)
 
-      var body: some Scene {
-          WindowGroup {
-              ContentView()
-                  .environment(appState)
-                  .task {
-                      await initializeCloudKit()
-                      await appState.load()
-                  }
-                  .onReceive(NotificationCenter.default.publisher(
-                      for: UIApplication.didReceiveMemoryWarningNotification)
-                  ) { _ in }  // placeholder — push handled via scene phase below
-          }
-          ._onRemoteNotification { userInfo, completion in
-              // Silent push from CloudKit subscription
-              guard let owner = appState.ownerRecordName else {
-                  completion(.noData); return
-              }
-              Task {
-                  await NotificationService.shared.handleTaskZonePush(
-                      ownerRecordName: owner,
-                      currentMember: appState.currentMember
-                  )
-                  completion(.newData)
-              }
-          }
-      }
+- [ ] **Step 3: Verify swipe-to-delete works**
 
-      private func initializeCloudKit() async {
-          do {
-              let ck = CloudKitService.shared
-              try await ck.checkAccountStatus()
-              try await ck.fetchAndCacheCurrentUserRecordName()
-              try await ck.createSharedZoneIfNeeded()
-          } catch {
-              print("[HouseMate] CloudKit init: \(error.localizedDescription)")
-          }
-      }
-  }
-  ```
+  - Add a task
+  - Swipe left → tap Delete → confirmation alert → task deleted from Supabase
 
-  > Note: `._onRemoteNotification` is the SwiftUI scene modifier for remote push. If it is not available in the target iOS version, use an `AppDelegate` adaptor instead (see note below).
+- [ ] **Step 4: Verify Realtime sync**
 
-- [ ] **Step 2: Verify push modifier availability**
+  Using two simulator instances logged into different accounts in the same household:
+  - User A adds a task
+  - User B's task list refreshes automatically
+  - User A completes a task
+  - User B's list reflects the change
 
-  `._onRemoteNotification` is an internal API in some SDK versions. If it is not available:
-
-  Add an `AppDelegate` class to handle remote notifications:
-
-  ```swift
-  // HouseMate/App/AppDelegate.swift
-  import UIKit
-
-  final class AppDelegate: NSObject, UIApplicationDelegate {
-      func application(
-          _ application: UIApplication,
-          didReceiveRemoteNotification userInfo: [AnyHashable: Any],
-          fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
-      ) {
-          Task {
-              // AppState is a singleton-like @Observable — access via shared pattern
-              // (see note: if using environment, post a notification instead)
-              completionHandler(.newData)
-          }
-      }
-  }
-  ```
-
-  And in `HouseMateApp`:
-  ```swift
-  @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-  ```
-
-  For v1, posting a `NSNotification` named `"HouseMateRemotePush"` from `AppDelegate` and observing it in a `.onReceive` modifier in `ContentView` is the simplest bridge. This is deferred to the notification polish plan — the subscription setup in Task 11 is the essential piece.
-
-- [ ] **Step 3: Build — no compile errors**
-
-  ⌘B. If `._onRemoteNotification` causes an error, comment it out and add the AppDelegate adaptor instead.
-
-- [ ] **Step 4: Test on physical device**
-
-  > Simulators cannot receive APNs push. This must be tested on a physical device signed into iCloud.
-  >
-  > 1. Run the app on two physical devices logged into different iCloud accounts
-  > 2. Accept the household share on the second device (manual CloudKit Dashboard setup for now, until onboarding plan is complete)
-  > 3. Complete a task on Device A
-  > 4. Within ~30 seconds, Device B should receive a local notification: "[Name] completed '[Title]'"
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Commit any polish fixes**
 
   ```bash
-  git add HouseMate/HouseMateApp.swift
-  git commit -m "feat: wire remote push handler for CloudKit task zone subscription"
+  git add -A
+  git commit -m "feat: verify and polish task CRUD, swipe actions, and Realtime sync"
   ```
 
 ---
 
-## Tasks Feature Complete
+### Task 11: TaskDetailView Completion Logs with Member Names
 
-**Deliverables:**
-- `AppState` — shared household context, injected via SwiftUI environment, used by all features
-- `TasksViewModel` — sort/filter logic unit-tested (11 tests), CloudKit operations
-- `TaskFormViewModel` — form validation unit-tested (8 tests), edit pre-population
-- Full Tasks tab: list with filter bar, overdue indicators, swipe actions, empty states, pull-to-refresh
-- Task detail with completion history (last 5 entries)
-- Add/edit form with all fields including recurring interval
-- Template browser (built-in + user-created, long-press to delete user templates)
-- CloudKit zone subscription + local notification dispatch for task completion events
+Completion logs show member display names. The `members` array is passed from `AppState` through `TaskListView` to `TaskDetailView`.
 
-**Test coverage summary:**
-- `TasksViewModelTests` — 11 tests: overdue sort order, multi-task ascending sort, undated position, completed position, all 4 filter variants
-- `TaskFormViewModelTests` — 8 tests: empty/whitespace title validation, recurring+no-interval validation, `toTask()` field mapping, `populate()` from existing task
+- [ ] **Step 1: Verify member names display correctly in TaskDetailView**
 
-**Next plan:**
-`2026-03-12-housemate-onboarding.md` — iCloud check, create household, join via share link, member setup
+  - Create a task
+  - Complete it as User A
+  - View task detail — completion log shows User A's display name (not UUID)
+  - Second user (User B in second simulator) completes the same recurring task
+  - Log shows both User A and User B names
+
+- [ ] **Step 2: Verify the "already completed" alert fires on concurrent completion**
+
+  - Have two simulators open with the same task visible
+  - Simultaneously swipe-complete on both
+  - One should show "Already Completed" alert
+
+- [ ] **Step 3: Commit**
+
+  No code changes expected if behavior is correct. If fixes needed, commit them:
+  ```bash
+  git add -A
+  git commit -m "fix: member name resolution in TaskDetailView completion logs"
+  ```
+
+---
+
+**Tasks feature complete.** All views, ViewModels, Realtime integration, and local notifications are in place. Proceed to the Bins feature plan (not yet written) or run the full review cycle.

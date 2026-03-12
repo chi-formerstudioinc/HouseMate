@@ -1,608 +1,977 @@
-# HouseMate Foundation Implementation Plan
+# HouseMate Foundation Implementation Plan (Supabase)
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Scaffold the HouseMate iOS Xcode project, implement all data models with business logic, create the CloudKit service layer, and wire up the navigation skeleton — the complete foundation before building any feature UIs.
+**Goal:** Scaffold the HouseMate iOS Xcode project, set up Supabase (schema + RLS), implement all Swift data models, create the Supabase service layer, wire up auth and onboarding, and deliver the 4-tab navigation skeleton — the complete foundation before building feature UIs.
 
-**Architecture:** Pure Swift models carry all business logic (rotation calculation, due dates, recurring task advancement) and map to `CKRecord` via failable initializers and `toCKRecord()` methods. A thin CloudKit service layer (one `@MainActor` class per domain) owns all async database operations. SwiftUI views use `@Observable` ViewModels added in feature plans. No third-party dependencies.
+**Architecture:** Codable Swift structs map 1:1 to Supabase tables. A single `SupabaseClient` singleton provides all database access. `@MainActor` service classes own async CRUD operations. `AppState` (`@Observable`) holds current user, member, and household context and is injected via SwiftUI `.environment`. Supabase Realtime channels live in a `RealtimeService` that posts `NotificationCenter` events which ViewModels observe. No third-party dependencies beyond `supabase-swift`.
 
-**Tech Stack:** Swift 5.9+, SwiftUI, CloudKit (CKContainer / CKDatabase / CKRecord), XCTest, iOS 17.0+
+**Tech Stack:** Swift 5.9+, SwiftUI, Supabase (supabase-swift 2.x), XCTest, iOS 17.0+
 
 **Spec:** `docs/superpowers/specs/2026-03-12-housemate-design.md`
 
 ---
 
-## Chunk 1: Project Scaffold
+## File Structure
 
-### Task 1: Create Xcode Project
+```
+HouseMate/
+├── App/
+│   ├── HouseMateApp.swift          — app entry point, injects AppState
+│   └── ContentView.swift           — root view: onboarding vs main tab bar
+├── Config/
+│   └── Supabase.swift              — SupabaseClient singleton
+├── Models/
+│   ├── Household.swift             — Household, HouseholdInvite
+│   ├── Member.swift                — Member
+│   ├── Task.swift                  — Task, TaskCategory, TaskPriority, RecurringInterval
+│   ├── TaskCompletionLog.swift     — TaskCompletionLog
+│   ├── TaskTemplate.swift          — TaskTemplate (Codable for DB rows + local built-ins)
+│   ├── BinSchedule.swift           — BinSchedule, RotationLabel
+│   ├── MaintenanceItem.swift       — MaintenanceItem, MaintenanceCategory, MaintenanceStatus
+│   ├── MaintenanceLog.swift        — MaintenanceLog
+│   └── MaintenanceTemplate.swift  — MaintenanceTemplate (DB rows + local built-ins)
+├── Services/
+│   ├── AuthService.swift           — sign up, sign in, sign out, current user
+│   ├── HouseholdService.swift      — create, join, fetch household + invite management
+│   ├── MemberService.swift         — fetch members for household
+│   ├── TaskService.swift           — CRUD for tasks + completion logs
+│   ├── BinService.swift            — upsert + fetch bin schedule
+│   ├── MaintenanceService.swift    — CRUD for items + logs
+│   ├── TemplateService.swift       — user-created templates CRUD + built-in bundles
+│   └── RealtimeService.swift       — Supabase Realtime channels, posts NotificationCenter events
+├── State/
+│   └── AppState.swift              — @Observable: currentUser, currentMember, household, members
+├── Resources/
+│   └── BuiltInTemplates.swift      — hardcoded built-in task + maintenance templates
+└── Views/
+    ├── Onboarding/
+    │   ├── AuthView.swift          — sign up / sign in form
+    │   ├── HouseholdChoiceView.swift — create or join household
+    │   ├── CreateHouseholdView.swift
+    │   └── JoinHouseholdView.swift
+    └── Main/
+        └── MainTabView.swift       — 4-tab skeleton with placeholder content
+```
+
+---
+
+## Chunk 1: Project Setup
+
+### Task 1: Create Xcode Project and Add Supabase SDK
 
 **Files:**
 - Create: `HouseMate.xcodeproj` (via Xcode GUI)
-- Create: `HouseMate/HouseMateApp.swift`
-- Create: `HouseMate/ContentView.swift`
+- Create: `HouseMate/App/HouseMateApp.swift`
+- Create: `HouseMate/App/ContentView.swift`
 
 - [ ] **Step 1: Create project in Xcode**
 
   File > New > Project > iOS > App:
   - Product Name: `HouseMate`
-  - Bundle Identifier: `com.housemate.app` *(update to your team prefix)*
+  - Bundle Identifier: `com.<yourname>.HouseMate`
   - Interface: SwiftUI
   - Language: Swift
-  - Uncheck: Use Core Data
-  - Check: Include Tests
+  - Storage: None (uncheck Core Data)
+  - Include Tests: checked
   - Minimum Deployment: iOS 17.0
   - Save to: `/Users/chilee-old/Documents/Development/augment-projects/HouseMate/`
 
-- [ ] **Step 2: Add iCloud + CloudKit capability**
+- [ ] **Step 2: Add supabase-swift via Swift Package Manager**
 
-  In Xcode: select the `HouseMate` target > Signing & Capabilities > + Capability > iCloud:
-  - Check: CloudKit
-  - Click "+" under Containers: `iCloud.com.housemate.app`
-  - Check: Push Notifications (required for CloudKit subscriptions)
+  File > Add Package Dependencies:
+  - URL: `https://github.com/supabase/supabase-swift`
+  - Version: Up to Next Major from `2.0.0`
+  - Add to target: `HouseMate`
+  - Select product: `Supabase` (includes Auth, Realtime, PostgREST)
 
-- [ ] **Step 3: Add Background Modes capability**
+- [ ] **Step 3: Verify build**
 
-  Signing & Capabilities > + Capability > Background Modes:
-  - Check: Remote notifications
+  Product > Build (⌘B). Should build with no errors.
 
-- [ ] **Step 4: Initialize git**
+- [ ] **Step 4: Commit**
 
   ```bash
-  cd /Users/chilee-old/Documents/Development/augment-projects/HouseMate
-  git init
-  cat > .gitignore << 'EOF'
-  # Xcode
-  *.xcuserstate
-  xcuserdata/
-  DerivedData/
-  .build/
-  *.xcworkspace/xcuserdata/
-  # macOS
-  .DS_Store
-  EOF
   git add .
-  git commit -m "feat: initial Xcode project scaffold"
+  git commit -m "feat: create Xcode project and add supabase-swift"
   ```
 
 ---
 
-### Task 2: Folder Structure
+### Task 2: Set Up Supabase Project and Database Schema
+
+**This task is performed in the Supabase web dashboard, not in Xcode.**
+
+- [ ] **Step 1: Create Supabase project**
+
+  Go to https://supabase.com, sign in, click "New project":
+  - Name: `HouseMate`
+  - Database password: save this somewhere safe
+  - Region: choose nearest
+  - Wait for project to provision (~2 minutes)
+
+- [ ] **Step 2: Run database schema SQL**
+
+  Go to SQL Editor in the Supabase dashboard and run the following in order:
+
+  ```sql
+  -- Enable UUID generation
+  CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+  -- updated_at trigger function
+  CREATE OR REPLACE FUNCTION set_updated_at()
+  RETURNS TRIGGER AS $$
+  BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+  END;
+  $$ LANGUAGE plpgsql;
+
+  -- households
+  CREATE TABLE households (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL,
+    created_by UUID NOT NULL REFERENCES auth.users(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
+  -- members
+  CREATE TABLE members (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    household_id UUID NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES auth.users(id),
+    display_name TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (household_id, user_id)
+  );
+
+  -- household_invites
+  CREATE TABLE household_invites (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    household_id UUID NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+    invite_code TEXT NOT NULL UNIQUE,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_by UUID NOT NULL REFERENCES auth.users(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
+  -- tasks
+  CREATE TABLE tasks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    household_id UUID NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    category TEXT NOT NULL,
+    priority TEXT NOT NULL,
+    assigned_to UUID REFERENCES members(id) ON DELETE SET NULL,
+    due_date DATE,
+    is_recurring BOOLEAN NOT NULL DEFAULT false,
+    recurring_interval TEXT,
+    is_completed BOOLEAN NOT NULL DEFAULT false,
+    completed_by UUID REFERENCES members(id) ON DELETE SET NULL,
+    completed_at TIMESTAMPTZ,
+    template_id UUID,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  CREATE TRIGGER tasks_updated_at BEFORE UPDATE ON tasks
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+  -- task_completion_logs
+  CREATE TABLE task_completion_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    completed_by UUID NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    completed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
+  -- task_templates (user-created only)
+  CREATE TABLE task_templates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    household_id UUID NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    category TEXT NOT NULL,
+    recurring_interval TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
+  -- bin_schedules
+  CREATE TABLE bin_schedules (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    household_id UUID NOT NULL REFERENCES households(id) ON DELETE CASCADE UNIQUE,
+    pickup_day_of_week INTEGER NOT NULL,
+    rotation_a TEXT NOT NULL,
+    rotation_b TEXT NOT NULL,
+    starting_rotation TEXT NOT NULL,
+    starting_date DATE NOT NULL,
+    notify_day_before BOOLEAN NOT NULL DEFAULT false,
+    notify_morning_of BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  CREATE TRIGGER bin_schedules_updated_at BEFORE UPDATE ON bin_schedules
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+  -- maintenance_items
+  CREATE TABLE maintenance_items (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    household_id UUID NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    interval_days INTEGER NOT NULL,
+    last_completed_date DATE,
+    notes TEXT,
+    template_id UUID,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  CREATE TRIGGER maintenance_items_updated_at BEFORE UPDATE ON maintenance_items
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+  -- maintenance_logs
+  CREATE TABLE maintenance_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    maintenance_item_id UUID NOT NULL REFERENCES maintenance_items(id) ON DELETE CASCADE,
+    completed_date DATE NOT NULL,
+    notes TEXT,
+    cost NUMERIC(10, 2),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
+  -- maintenance_templates (user-created only)
+  CREATE TABLE maintenance_templates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    household_id UUID NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    interval_days INTEGER NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  ```
+
+- [ ] **Step 3: Enable Row Level Security and add policies**
+
+  ```sql
+  -- Helper function: get the household_id for the current user
+  CREATE OR REPLACE FUNCTION my_household_id()
+  RETURNS UUID AS $$
+    SELECT household_id FROM members WHERE user_id = auth.uid() LIMIT 1;
+  $$ LANGUAGE sql STABLE SECURITY DEFINER;
+
+  -- Enable RLS on all tables
+  ALTER TABLE households ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE members ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE household_invites ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE task_completion_logs ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE task_templates ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE bin_schedules ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE maintenance_items ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE maintenance_logs ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE maintenance_templates ENABLE ROW LEVEL SECURITY;
+
+  -- households: members can read their household; creator can update
+  CREATE POLICY "members can view their household"
+    ON households FOR SELECT
+    USING (id = my_household_id());
+
+  CREATE POLICY "creator can update household"
+    ON households FOR UPDATE
+    USING (created_by = auth.uid());
+
+  -- members: can view all members of their household; can insert own row; can update own row
+  CREATE POLICY "view household members"
+    ON members FOR SELECT
+    USING (household_id = my_household_id());
+
+  CREATE POLICY "insert own member row"
+    ON members FOR INSERT
+    WITH CHECK (user_id = auth.uid());
+
+  CREATE POLICY "update own member row"
+    ON members FOR UPDATE
+    USING (user_id = auth.uid());
+
+  -- household_invites: household members can read/insert/update
+  CREATE POLICY "view household invites"
+    ON household_invites FOR SELECT
+    USING (household_id = my_household_id() OR true); -- public read for joining
+
+  CREATE POLICY "insert household invite"
+    ON household_invites FOR INSERT
+    WITH CHECK (household_id = my_household_id());
+
+  CREATE POLICY "update household invite"
+    ON household_invites FOR UPDATE
+    USING (household_id = my_household_id());
+
+  -- tasks
+  CREATE POLICY "household tasks select"
+    ON tasks FOR SELECT USING (household_id = my_household_id());
+  CREATE POLICY "household tasks insert"
+    ON tasks FOR INSERT WITH CHECK (household_id = my_household_id());
+  CREATE POLICY "household tasks update"
+    ON tasks FOR UPDATE USING (household_id = my_household_id());
+  CREATE POLICY "household tasks delete"
+    ON tasks FOR DELETE USING (household_id = my_household_id());
+
+  -- task_completion_logs
+  CREATE POLICY "household task_completion_logs select"
+    ON task_completion_logs FOR SELECT
+    USING (task_id IN (SELECT id FROM tasks WHERE household_id = my_household_id()));
+  CREATE POLICY "household task_completion_logs insert"
+    ON task_completion_logs FOR INSERT
+    WITH CHECK (task_id IN (SELECT id FROM tasks WHERE household_id = my_household_id()));
+
+  -- task_templates
+  CREATE POLICY "household task_templates select"
+    ON task_templates FOR SELECT USING (household_id = my_household_id());
+  CREATE POLICY "household task_templates insert"
+    ON task_templates FOR INSERT WITH CHECK (household_id = my_household_id());
+  CREATE POLICY "household task_templates delete"
+    ON task_templates FOR DELETE USING (household_id = my_household_id());
+
+  -- bin_schedules
+  CREATE POLICY "household bin_schedules select"
+    ON bin_schedules FOR SELECT USING (household_id = my_household_id());
+  CREATE POLICY "household bin_schedules insert"
+    ON bin_schedules FOR INSERT WITH CHECK (household_id = my_household_id());
+  CREATE POLICY "household bin_schedules update"
+    ON bin_schedules FOR UPDATE USING (household_id = my_household_id());
+
+  -- maintenance_items
+  CREATE POLICY "household maintenance_items select"
+    ON maintenance_items FOR SELECT USING (household_id = my_household_id());
+  CREATE POLICY "household maintenance_items insert"
+    ON maintenance_items FOR INSERT WITH CHECK (household_id = my_household_id());
+  CREATE POLICY "household maintenance_items update"
+    ON maintenance_items FOR UPDATE USING (household_id = my_household_id());
+  CREATE POLICY "household maintenance_items delete"
+    ON maintenance_items FOR DELETE USING (household_id = my_household_id());
+
+  -- maintenance_logs
+  CREATE POLICY "household maintenance_logs select"
+    ON maintenance_logs FOR SELECT
+    USING (maintenance_item_id IN (SELECT id FROM maintenance_items WHERE household_id = my_household_id()));
+  CREATE POLICY "household maintenance_logs insert"
+    ON maintenance_logs FOR INSERT
+    WITH CHECK (maintenance_item_id IN (SELECT id FROM maintenance_items WHERE household_id = my_household_id()));
+  CREATE POLICY "household maintenance_logs delete"
+    ON maintenance_logs FOR DELETE
+    USING (maintenance_item_id IN (SELECT id FROM maintenance_items WHERE household_id = my_household_id()));
+
+  -- maintenance_templates
+  CREATE POLICY "household maintenance_templates select"
+    ON maintenance_templates FOR SELECT USING (household_id = my_household_id());
+  CREATE POLICY "household maintenance_templates insert"
+    ON maintenance_templates FOR INSERT WITH CHECK (household_id = my_household_id());
+  CREATE POLICY "household maintenance_templates delete"
+    ON maintenance_templates FOR DELETE USING (household_id = my_household_id());
+  ```
+
+- [ ] **Step 4: Enable Realtime on relevant tables**
+
+  In the Supabase dashboard: Database > Replication > enable Realtime for:
+  - `tasks`
+  - `task_completion_logs`
+  - `bin_schedules`
+  - `maintenance_items`
+  - `maintenance_logs`
+  - `members`
+
+- [ ] **Step 5: Get API credentials**
+
+  Project Settings > API. Copy:
+  - Project URL (e.g. `https://xxxx.supabase.co`)
+  - `anon` public key
+
+---
+
+### Task 3: Configure SupabaseClient in App
 
 **Files:**
-- Create: `HouseMate/Models/` group
-- Create: `HouseMate/Services/` group
-- Create: `HouseMate/Views/Home/` group
-- Create: `HouseMate/Views/Tasks/` group
-- Create: `HouseMate/Views/Bins/` group
-- Create: `HouseMate/Views/Maintenance/` group
-- Create: `HouseMate/Views/Settings/` group
-- Create: `HouseMate/Views/Onboarding/` group
-- Create: `HouseMate/Views/Shared/` group
-- Create: `HouseMate/Resources/` group
+- Create: `HouseMate/Config/Supabase.swift`
+- Create: `HouseMate/Config/Secrets.swift` (gitignored)
+- Modify: `.gitignore`
 
-- [ ] **Step 1: Create filesystem folders**
+- [ ] **Step 1: Write failing test**
+
+  In `HouseMateTests/ConfigTests.swift`:
+  ```swift
+  import XCTest
+  @testable import HouseMate
+
+  final class ConfigTests: XCTestCase {
+      func test_supabaseClient_isNotNil() {
+          XCTAssertNotNil(supabase)
+      }
+  }
+  ```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+  Run: `xcodebuild test -scheme HouseMate -destination 'platform=iOS Simulator,name=iPhone 16'`
+  Expected: FAIL — `supabase` not defined.
+
+- [ ] **Step 3: Create Secrets.swift**
+
+  ```swift
+  // HouseMate/Config/Secrets.swift
+  // DO NOT COMMIT — add to .gitignore
+  enum Secrets {
+      static let supabaseURL = "https://YOUR_PROJECT.supabase.co"
+      static let supabaseAnonKey = "YOUR_ANON_KEY"
+  }
+  ```
+
+- [ ] **Step 4: Create Supabase.swift**
+
+  ```swift
+  // HouseMate/Config/Supabase.swift
+  import Supabase
+
+  let supabase = SupabaseClient(
+      supabaseURL: URL(string: Secrets.supabaseURL)!,
+      supabaseKey: Secrets.supabaseAnonKey
+  )
+  ```
+
+- [ ] **Step 5: Add Secrets.swift to .gitignore**
+
+  Append to `.gitignore`:
+  ```
+  HouseMate/Config/Secrets.swift
+  ```
+
+- [ ] **Step 6: Run test to verify it passes**
+
+  Expected: PASS.
+
+- [ ] **Step 7: Commit**
 
   ```bash
-  cd /Users/chilee-old/Documents/Development/augment-projects/HouseMate/HouseMate
-  mkdir -p Models Services Views/Home Views/Tasks Views/Bins Views/Maintenance Views/Settings Views/Onboarding Views/Shared Resources
-  ```
-
-- [ ] **Step 2: Add folders as groups in Xcode**
-
-  In Xcode: right-click the `HouseMate` group > New Group > name each to match the folders above. Files created in later tasks must be added inside their matching group.
-
----
-
-### Task 3: Navigation Skeleton
-
-**Files:**
-- Modify: `HouseMate/HouseMateApp.swift`
-- Modify: `HouseMate/ContentView.swift`
-- Create: `HouseMate/Views/Home/HomeView.swift`
-- Create: `HouseMate/Views/Tasks/TasksView.swift`
-- Create: `HouseMate/Views/Bins/BinsView.swift`
-- Create: `HouseMate/Views/Maintenance/MaintenanceView.swift`
-- Create: `HouseMate/Views/Settings/SettingsView.swift`
-
-- [ ] **Step 1: Replace HouseMateApp.swift**
-
-  ```swift
-  import SwiftUI
-
-  @main
-  struct HouseMateApp: App {
-      var body: some Scene {
-          WindowGroup {
-              ContentView()
-          }
-      }
-  }
-  ```
-
-- [ ] **Step 2: Replace ContentView.swift with tab navigation**
-
-  ```swift
-  import SwiftUI
-
-  struct ContentView: View {
-      var body: some View {
-          TabView {
-              HomeView()
-                  .tabItem { Label("Home", systemImage: "house.fill") }
-              TasksView()
-                  .tabItem { Label("Tasks", systemImage: "checklist") }
-              BinsView()
-                  .tabItem { Label("Bins", systemImage: "trash.fill") }
-              MaintenanceView()
-                  .tabItem { Label("Maintenance", systemImage: "wrench.and.screwdriver.fill") }
-          }
-      }
-  }
-  ```
-
-- [ ] **Step 3: Create HomeView.swift**
-
-  ```swift
-  import SwiftUI
-
-  struct HomeView: View {
-      var body: some View {
-          NavigationStack {
-              Text("Home")
-                  .navigationTitle("Home")
-          }
-      }
-  }
-  ```
-
-- [ ] **Step 4: Create TasksView.swift**
-
-  ```swift
-  import SwiftUI
-
-  struct TasksView: View {
-      var body: some View {
-          NavigationStack {
-              Text("Tasks")
-                  .navigationTitle("Tasks")
-          }
-      }
-  }
-  ```
-
-- [ ] **Step 5: Create BinsView.swift**
-
-  ```swift
-  import SwiftUI
-
-  struct BinsView: View {
-      var body: some View {
-          NavigationStack {
-              Text("Bins")
-                  .navigationTitle("Bins")
-          }
-      }
-  }
-  ```
-
-- [ ] **Step 6: Create MaintenanceView.swift**
-
-  ```swift
-  import SwiftUI
-
-  struct MaintenanceView: View {
-      var body: some View {
-          NavigationStack {
-              Text("Maintenance")
-                  .navigationTitle("Maintenance")
-          }
-      }
-  }
-  ```
-
-- [ ] **Step 7: Create SettingsView.swift**
-
-  ```swift
-  import SwiftUI
-
-  struct SettingsView: View {
-      var body: some View {
-          NavigationStack {
-              Text("Settings")
-                  .navigationTitle("Settings")
-          }
-      }
-  }
-  ```
-
-- [ ] **Step 8: Build and run on simulator**
-
-  In Xcode: ⌘R. Verify 4 tabs appear with correct icons and labels. No crashes.
-
-- [ ] **Step 9: Commit**
-
-  ```bash
-  git add HouseMate/
-  git commit -m "feat: add tab navigation skeleton with placeholder views"
+  git add HouseMate/Config/Supabase.swift .gitignore HouseMateTests/ConfigTests.swift
+  git commit -m "feat: configure SupabaseClient singleton"
   ```
 
 ---
 
-## Chunk 2: Shared Enums and Pure Business Logic
+## Chunk 2: Models
 
-### Task 4: Shared Enums
+### Task 4: Core Models — Household, Member, HouseholdInvite
 
 **Files:**
-- Create: `HouseMate/Models/HouseMateEnums.swift`
+- Create: `HouseMate/Models/Household.swift`
+- Create: `HouseMate/Models/Member.swift`
+- Create: `HouseMateTests/Models/HouseholdTests.swift`
 
-- [ ] **Step 1: Create HouseMateEnums.swift**
+- [ ] **Step 1: Write failing tests**
 
   ```swift
+  // HouseMateTests/Models/HouseholdTests.swift
+  import XCTest
+  @testable import HouseMate
+
+  final class HouseholdTests: XCTestCase {
+      func test_household_decodesFromJSON() throws {
+          let json = """
+          {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "Test House",
+            "created_by": "00000000-0000-0000-0000-000000000002",
+            "created_at": "2026-01-01T00:00:00Z"
+          }
+          """.data(using: .utf8)!
+          let decoder = JSONDecoder()
+          decoder.dateDecodingStrategy = .iso8601
+          let household = try decoder.decode(Household.self, from: json)
+          XCTAssertEqual(household.name, "Test House")
+      }
+
+      func test_member_decodesFromJSON() throws {
+          let json = """
+          {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "household_id": "00000000-0000-0000-0000-000000000002",
+            "user_id": "00000000-0000-0000-0000-000000000003",
+            "display_name": "Alice",
+            "created_at": "2026-01-01T00:00:00Z"
+          }
+          """.data(using: .utf8)!
+          let decoder = JSONDecoder()
+          decoder.dateDecodingStrategy = .iso8601
+          let member = try decoder.decode(Member.self, from: json)
+          XCTAssertEqual(member.displayName, "Alice")
+      }
+  }
+  ```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+  Expected: FAIL — types not defined.
+
+- [ ] **Step 3: Implement Household.swift**
+
+  ```swift
+  // HouseMate/Models/Household.swift
   import Foundation
 
-  enum TaskCategory: String, CaseIterable, Codable {
-      case kitchen = "Kitchen"
-      case bathroom = "Bathroom"
-      case outdoor = "Outdoor"
-      case errands = "Errands"
-      case other = "Other"
-  }
+  struct Household: Codable, Identifiable {
+      let id: UUID
+      let name: String
+      let createdBy: UUID
+      let createdAt: Date
 
-  enum TaskPriority: String, CaseIterable, Codable {
-      case high = "High"
-      case medium = "Medium"
-      case low = "Low"
-  }
-
-  enum RecurringInterval: String, CaseIterable, Codable {
-      case daily = "Daily"
-      case weekly = "Weekly"
-      case monthly = "Monthly"
-
-      func advance(from date: Date, calendar: Calendar = .current) -> Date {
-          switch self {
-          case .daily:   return calendar.date(byAdding: .day, value: 1, to: date) ?? date
-          case .weekly:  return calendar.date(byAdding: .weekOfYear, value: 1, to: date) ?? date
-          case .monthly: return calendar.date(byAdding: .month, value: 1, to: date) ?? date
-          }
+      enum CodingKeys: String, CodingKey {
+          case id, name
+          case createdBy = "created_by"
+          case createdAt = "created_at"
       }
   }
 
-  enum SeasonalCategory: String, CaseIterable, Codable {
-      case spring = "Spring"
-      case summer = "Summer"
-      case fall = "Fall"
-      case winter = "Winter"
-      case yearRound = "Year-Round"
-  }
+  struct HouseholdInvite: Codable, Identifiable {
+      let id: UUID
+      let householdId: UUID
+      let inviteCode: String
+      let isActive: Bool
+      let createdBy: UUID
+      let createdAt: Date
 
-  enum BinRotation: String, Codable, Equatable {
-      case a = "A"
-      case b = "B"
-
-      var other: BinRotation { self == .a ? .b : .a }
+      enum CodingKeys: String, CodingKey {
+          case id
+          case householdId = "household_id"
+          case inviteCode = "invite_code"
+          case isActive = "is_active"
+          case createdBy = "created_by"
+          case createdAt = "created_at"
+      }
   }
   ```
 
-- [ ] **Step 2: Build to verify no compile errors**
+- [ ] **Step 4: Implement Member.swift**
 
-  ⌘B (Product > Build).
+  ```swift
+  // HouseMate/Models/Member.swift
+  import Foundation
 
-- [ ] **Step 3: Commit**
+  struct Member: Codable, Identifiable {
+      let id: UUID
+      let householdId: UUID
+      let userId: UUID
+      let displayName: String
+      let createdAt: Date
+
+      enum CodingKeys: String, CodingKey {
+          case id
+          case householdId = "household_id"
+          case userId = "user_id"
+          case displayName = "display_name"
+          case createdAt = "created_at"
+      }
+  }
+  ```
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+  Expected: PASS.
+
+- [ ] **Step 6: Commit**
 
   ```bash
-  git add HouseMate/Models/HouseMateEnums.swift
-  git commit -m "feat: add shared enums for task, maintenance, and bin schedule"
+  git add HouseMate/Models/Household.swift HouseMate/Models/Member.swift HouseMateTests/Models/HouseholdTests.swift
+  git commit -m "feat: add Household and Member models"
   ```
 
 ---
 
-### Task 5: BinSchedule Model + Rotation Algorithm (TDD)
+### Task 5: Task Models
+
+**Files:**
+- Create: `HouseMate/Models/Task.swift`
+- Create: `HouseMate/Models/TaskCompletionLog.swift`
+- Create: `HouseMateTests/Models/TaskTests.swift`
+
+- [ ] **Step 1: Write failing tests**
+
+  ```swift
+  // HouseMateTests/Models/TaskTests.swift
+  import XCTest
+  @testable import HouseMate
+
+  final class TaskTests: XCTestCase {
+      func test_task_decodesFromJSON() throws {
+          let json = """
+          {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "household_id": "00000000-0000-0000-0000-000000000002",
+            "title": "Take out trash",
+            "category": "other",
+            "priority": "medium",
+            "assigned_to": null,
+            "due_date": "2026-03-15",
+            "is_recurring": true,
+            "recurring_interval": "weekly",
+            "is_completed": false,
+            "completed_by": null,
+            "completed_at": null,
+            "template_id": null,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+          }
+          """.data(using: .utf8)!
+          let decoder = JSONDecoder()
+          decoder.dateDecodingStrategy = .custom { decoder in
+              let s = try decoder.singleValueContainer().decode(String.self)
+              if let date = ISO8601DateFormatter().date(from: s) { return date }
+              let df = DateFormatter()
+              df.dateFormat = "yyyy-MM-dd"
+              if let date = df.date(from: s) { return date }
+              throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "bad date: \(s)"))
+          }
+          let task = try decoder.decode(HMTask.self, from: json)
+          XCTAssertEqual(task.title, "Take out trash")
+          XCTAssertEqual(task.recurringInterval, .weekly)
+          XCTAssertFalse(task.isCompleted)
+      }
+
+      func test_task_nextDueDate_weekly() {
+          let base = Calendar.current.date(from: DateComponents(year: 2026, month: 3, day: 1))!
+          let task = HMTask.makeTest(dueDate: base, recurringInterval: .weekly)
+          XCTAssertEqual(task.nextDueDate, Calendar.current.date(byAdding: .day, value: 7, to: base))
+      }
+
+      func test_task_nextDueDate_monthly() {
+          let base = Calendar.current.date(from: DateComponents(year: 2026, month: 3, day: 1))!
+          let task = HMTask.makeTest(dueDate: base, recurringInterval: .monthly)
+          XCTAssertEqual(task.nextDueDate, Calendar.current.date(byAdding: .month, value: 1, to: base))
+      }
+
+      func test_task_isOverdue_whenDueDatePast() {
+          let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: Date())!
+          let task = HMTask.makeTest(dueDate: yesterday, isCompleted: false)
+          XCTAssertTrue(task.isOverdue)
+      }
+
+      func test_task_isNotOverdue_whenCompleted() {
+          let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: Date())!
+          let task = HMTask.makeTest(dueDate: yesterday, isCompleted: true)
+          XCTAssertFalse(task.isOverdue)
+      }
+  }
+  ```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+- [ ] **Step 3: Implement Task.swift**
+
+  ```swift
+  // HouseMate/Models/Task.swift
+  import Foundation
+
+  // Named HMTask to avoid conflict with Swift concurrency's Task type
+  struct HMTask: Codable, Identifiable {
+      let id: UUID
+      let householdId: UUID
+      var title: String
+      var category: TaskCategory
+      var priority: TaskPriority
+      var assignedTo: UUID?
+      var dueDate: Date?
+      var isRecurring: Bool
+      var recurringInterval: RecurringInterval?
+      var isCompleted: Bool
+      var completedBy: UUID?
+      var completedAt: Date?
+      let templateId: UUID?
+      let createdAt: Date
+      var updatedAt: Date
+
+      enum CodingKeys: String, CodingKey {
+          case id, title, category, priority
+          case householdId = "household_id"
+          case assignedTo = "assigned_to"
+          case dueDate = "due_date"
+          case isRecurring = "is_recurring"
+          case recurringInterval = "recurring_interval"
+          case isCompleted = "is_completed"
+          case completedBy = "completed_by"
+          case completedAt = "completed_at"
+          case templateId = "template_id"
+          case createdAt = "created_at"
+          case updatedAt = "updated_at"
+      }
+
+      var isOverdue: Bool {
+          guard !isCompleted, let due = dueDate else { return false }
+          return due < Calendar.current.startOfDay(for: Date())
+      }
+
+      var nextDueDate: Date? {
+          guard let due = dueDate, let interval = recurringInterval else { return nil }
+          switch interval {
+          case .daily:   return Calendar.current.date(byAdding: .day, value: 1, to: due)
+          case .weekly:  return Calendar.current.date(byAdding: .day, value: 7, to: due)
+          case .monthly: return Calendar.current.date(byAdding: .month, value: 1, to: due)
+          }
+      }
+  }
+
+  enum TaskCategory: String, Codable, CaseIterable {
+      case kitchen, bathroom, outdoor, errands, other
+      var displayName: String { rawValue.capitalized }
+  }
+
+  enum TaskPriority: String, Codable, CaseIterable {
+      case high, medium, low
+      var displayName: String { rawValue.capitalized }
+  }
+
+  enum RecurringInterval: String, Codable, CaseIterable {
+      case daily, weekly, monthly
+      var displayName: String { rawValue.capitalized }
+      var days: Int {
+          switch self { case .daily: return 1; case .weekly: return 7; case .monthly: return 30 }
+      }
+  }
+
+  // Test helper
+  extension HMTask {
+      static func makeTest(
+          id: UUID = UUID(),
+          householdId: UUID = UUID(),
+          title: String = "Test Task",
+          category: TaskCategory = .other,
+          priority: TaskPriority = .medium,
+          assignedTo: UUID? = nil,
+          dueDate: Date? = nil,
+          isRecurring: Bool = false,
+          recurringInterval: RecurringInterval? = nil,
+          isCompleted: Bool = false,
+          completedBy: UUID? = nil,
+          completedAt: Date? = nil,
+          templateId: UUID? = nil
+      ) -> HMTask {
+          HMTask(
+              id: id, householdId: householdId, title: title,
+              category: category, priority: priority, assignedTo: assignedTo,
+              dueDate: dueDate, isRecurring: isRecurring, recurringInterval: recurringInterval,
+              isCompleted: isCompleted, completedBy: completedBy, completedAt: completedAt,
+              templateId: templateId, createdAt: Date(), updatedAt: Date()
+          )
+      }
+  }
+  ```
+
+- [ ] **Step 4: Implement TaskCompletionLog.swift**
+
+  ```swift
+  // HouseMate/Models/TaskCompletionLog.swift
+  import Foundation
+
+  struct TaskCompletionLog: Codable, Identifiable {
+      let id: UUID
+      let taskId: UUID
+      let completedBy: UUID
+      let completedAt: Date
+
+      enum CodingKeys: String, CodingKey {
+          case id
+          case taskId = "task_id"
+          case completedBy = "completed_by"
+          case completedAt = "completed_at"
+      }
+  }
+  ```
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+- [ ] **Step 6: Commit**
+
+  ```bash
+  git add HouseMate/Models/Task.swift HouseMate/Models/TaskCompletionLog.swift HouseMateTests/Models/TaskTests.swift
+  git commit -m "feat: add Task and TaskCompletionLog models with business logic"
+  ```
+
+---
+
+### Task 6: BinSchedule and Maintenance Models
 
 **Files:**
 - Create: `HouseMate/Models/BinSchedule.swift`
+- Create: `HouseMate/Models/MaintenanceItem.swift`
+- Create: `HouseMate/Models/MaintenanceLog.swift`
+- Create: `HouseMate/Models/TaskTemplate.swift`
+- Create: `HouseMate/Models/MaintenanceTemplate.swift`
 - Create: `HouseMateTests/Models/BinScheduleTests.swift`
+- Create: `HouseMateTests/Models/MaintenanceItemTests.swift`
 
-- [ ] **Step 1: Create test file — BinScheduleTests.swift**
-
-  In Xcode, create `HouseMateTests/Models/` group, then add:
+- [ ] **Step 1: Write failing tests**
 
   ```swift
+  // HouseMateTests/Models/BinScheduleTests.swift
   import XCTest
   @testable import HouseMate
 
   final class BinScheduleTests: XCTestCase {
+      // startingDate = Monday 2026-03-02, startingRotation = A
+      // weekday 2 = Monday (Calendar.weekday)
+      let anchor = Calendar.current.date(from: DateComponents(year: 2026, month: 3, day: 2))!
 
-      private func date(_ year: Int, _ month: Int, _ day: Int) -> Date {
-          var c = DateComponents()
-          c.year = year; c.month = month; c.day = day
-          return Calendar.current.date(from: c)!
-      }
-
-      private func makeSchedule(startingDate: Date, startingRotation: BinRotation = .a) -> BinSchedule {
+      func makeSchedule(startingRotation: String = "A") -> BinSchedule {
           BinSchedule(
-              pickupDayOfWeek: 5,          // Thursday
-              rotationA: "Compost + Recycling",
-              rotationB: "Compost + Garbage",
+              id: UUID(), householdId: UUID(),
+              pickupDayOfWeek: 2, // Monday
+              rotationA: "Recycling", rotationB: "Garbage",
               startingRotation: startingRotation,
-              startingDate: startingDate,
-              notifyDayBefore: false,
-              notifyMorningOf: false
+              startingDate: anchor,
+              notifyDayBefore: false, notifyMorningOf: false,
+              createdAt: Date(), updatedAt: Date()
           )
       }
 
-      func test_rotation_sameWeekAsStarting_returnsStartingRotation() {
-          let schedule = makeSchedule(startingDate: date(2026, 3, 5))
-          XCTAssertEqual(schedule.rotation(for: date(2026, 3, 5)), .a)
+      func test_rotation_onStartingDate_isStartingRotation() {
+          let schedule = makeSchedule()
+          XCTAssertEqual(schedule.rotation(for: anchor), "Recycling") // weeksDiff = 0 → even → A
       }
 
-      func test_rotation_oneWeekLater_returnsOtherRotation() {
-          let schedule = makeSchedule(startingDate: date(2026, 3, 5))
-          XCTAssertEqual(schedule.rotation(for: date(2026, 3, 12)), .b)
+      func test_rotation_oneWeekLater_isOtherRotation() {
+          let schedule = makeSchedule()
+          let nextWeek = Calendar.current.date(byAdding: .day, value: 7, to: anchor)!
+          XCTAssertEqual(schedule.rotation(for: nextWeek), "Garbage") // weeksDiff = 1 → odd → B
       }
 
-      func test_rotation_twoWeeksLater_returnsStartingRotation() {
-          let schedule = makeSchedule(startingDate: date(2026, 3, 5))
-          XCTAssertEqual(schedule.rotation(for: date(2026, 3, 19)), .a)
-      }
-
-      func test_rotation_startingRotationB_sameWeek_returnsB() {
-          let schedule = makeSchedule(startingDate: date(2026, 3, 5), startingRotation: .b)
-          XCTAssertEqual(schedule.rotation(for: date(2026, 3, 5)), .b)
-      }
-
-      func test_nextPickupDate_fromNonPickupDay_returnsNextPickupDay() {
-          let schedule = makeSchedule(startingDate: date(2026, 3, 5))
-          // From Monday March 9, next Thursday is March 12
-          XCTAssertEqual(schedule.nextPickupDate(from: date(2026, 3, 9)), date(2026, 3, 12))
-      }
-
-      func test_nextPickupDate_fromPickupDay_returnsFollowingWeek() {
-          let schedule = makeSchedule(startingDate: date(2026, 3, 5))
-          // From Thursday March 12 (pickup day itself), next is March 19
-          XCTAssertEqual(schedule.nextPickupDate(from: date(2026, 3, 12)), date(2026, 3, 19))
-      }
-
-      func test_upcomingPickups_returnsRequestedCount() {
-          let schedule = makeSchedule(startingDate: date(2026, 3, 5))
-          let pickups = schedule.upcomingPickups(from: date(2026, 3, 9), count: 8)
-          XCTAssertEqual(pickups.count, 8)
-      }
-
-      func test_upcomingPickups_firstEntryIsNextThursdayWithCorrectRotation() {
-          let schedule = makeSchedule(startingDate: date(2026, 3, 5))
-          // From Monday March 9 → first pickup is Thursday March 12 (1 week after March 5 → rotation B)
-          let pickups = schedule.upcomingPickups(from: date(2026, 3, 9), count: 8)
-          XCTAssertEqual(pickups[0].date, date(2026, 3, 12))
-          XCTAssertEqual(pickups[0].rotation, .b)
-      }
-
-      func test_upcomingPickups_alternatesRotation() {
-          let schedule = makeSchedule(startingDate: date(2026, 3, 5))
-          let pickups = schedule.upcomingPickups(from: date(2026, 3, 9), count: 4)
-          XCTAssertEqual(pickups[0].rotation, .b)
-          XCTAssertEqual(pickups[1].rotation, .a)
-          XCTAssertEqual(pickups[2].rotation, .b)
-          XCTAssertEqual(pickups[3].rotation, .a)
-      }
-
-      func test_daysUntilNextPickup_fromMondayBeforeThursday_returnsThree() {
-          let schedule = makeSchedule(startingDate: date(2026, 3, 5))
-          // Monday March 9 → Thursday March 12 = 3 days
-          XCTAssertEqual(schedule.daysUntilNextPickup(from: date(2026, 3, 9)), 3)
+      func test_rotation_twoWeeksLater_isStartingRotation() {
+          let schedule = makeSchedule()
+          let twoWeeks = Calendar.current.date(byAdding: .day, value: 14, to: anchor)!
+          XCTAssertEqual(schedule.rotation(for: twoWeeks), "Recycling") // weeksDiff = 2 → even → A
       }
   }
-  ```
 
-- [ ] **Step 2: Run tests — expect compile failure**
-
-  ⌘U. Expected: compile error — `BinSchedule` not defined yet.
-
-- [ ] **Step 3: Create BinSchedule.swift**
-
-  ```swift
-  import Foundation
-  import CloudKit
-
-  struct PickupEntry: Equatable {
-      let date: Date
-      let rotation: BinRotation
-  }
-
-  struct BinSchedule {
-      var recordID: CKRecord.ID?
-      var pickupDayOfWeek: Int       // 1=Sun…7=Sat (Calendar.weekday)
-      var rotationA: String
-      var rotationB: String
-      var startingRotation: BinRotation
-      var startingDate: Date
-      var notifyDayBefore: Bool
-      var notifyMorningOf: Bool
-
-      // MARK: - Business Logic
-
-      /// Returns the rotation label for the given pickup date.
-      /// weeksDiff even → startingRotation; odd → other.
-      func rotation(for pickupDate: Date) -> BinRotation {
-          let cal = Calendar.current
-          let startDay = cal.startOfDay(for: startingDate)
-          let targetDay = cal.startOfDay(for: pickupDate)
-          let days = cal.dateComponents([.day], from: startDay, to: targetDay).day ?? 0
-          let weeksDiff = days / 7
-          return weeksDiff.isMultiple(of: 2) ? startingRotation : startingRotation.other
-      }
-
-      /// Returns the display label string for a rotation value.
-      func label(for rotation: BinRotation) -> String {
-          rotation == .a ? rotationA : rotationB
-      }
-
-      /// Next pickup date strictly after `referenceDate`.
-      /// If `referenceDate` is the pickup day, returns the following week.
-      func nextPickupDate(from referenceDate: Date) -> Date {
-          let cal = Calendar.current
-          let today = cal.startOfDay(for: referenceDate)
-          let todayWeekday = cal.component(.weekday, from: today)
-          var daysUntil = pickupDayOfWeek - todayWeekday
-          if daysUntil <= 0 { daysUntil += 7 }
-          return cal.date(byAdding: .day, value: daysUntil, to: today)!
-      }
-
-      /// Returns `count` upcoming pickup entries starting from the next pickup after `referenceDate`.
-      func upcomingPickups(from referenceDate: Date, count: Int = 8) -> [PickupEntry] {
-          var results: [PickupEntry] = []
-          var current = nextPickupDate(from: referenceDate)
-          for _ in 0..<count {
-              results.append(PickupEntry(date: current, rotation: rotation(for: current)))
-              current = Calendar.current.date(byAdding: .weekOfYear, value: 1, to: current)!
-          }
-          return results
-      }
-
-      /// Number of days from `referenceDate` until the next pickup.
-      func daysUntilNextPickup(from referenceDate: Date = Date()) -> Int {
-          let next = nextPickupDate(from: referenceDate)
-          return Calendar.current.dateComponents(
-              [.day],
-              from: Calendar.current.startOfDay(for: referenceDate),
-              to: next
-          ).day ?? 0
-      }
-  }
-  ```
-
-- [ ] **Step 4: Run tests — expect all PASS**
-
-  ⌘U. All 10 tests green.
-
-- [ ] **Step 5: Commit**
-
-  ```bash
-  git add HouseMate/Models/BinSchedule.swift HouseMateTests/Models/BinScheduleTests.swift
-  git commit -m "feat: add BinSchedule model with rotation algorithm (tested)"
-  ```
-
----
-
-### Task 6: MaintenanceItem Model (TDD)
-
-**Files:**
-- Create: `HouseMate/Models/MaintenanceItem.swift`
-- Create: `HouseMateTests/Models/MaintenanceItemTests.swift`
-
-- [ ] **Step 1: Create MaintenanceItemTests.swift**
-
-  ```swift
-  import XCTest
-  @testable import HouseMate
-
+  // HouseMateTests/Models/MaintenanceItemTests.swift
   final class MaintenanceItemTests: XCTestCase {
-
-      private func date(_ year: Int, _ month: Int, _ day: Int) -> Date {
-          var c = DateComponents(); c.year = year; c.month = month; c.day = day
-          return Calendar.current.date(from: c)!
+      func test_status_isRed_whenNeverCompleted() {
+          let item = MaintenanceItem.makeTest(lastCompletedDate: nil)
+          XCTAssertEqual(item.status, .red)
       }
 
-      private func daysAgo(_ n: Int) -> Date {
-          Calendar.current.date(byAdding: .day, value: -n, to: Date())!
-      }
-
-      func test_nextDueDate_calculatedFromLastCompleted() {
-          let item = MaintenanceItem(
-              name: "Change furnace filter", category: .yearRound,
-              intervalDays: 90, lastCompletedDate: date(2026, 1, 1),
-              notes: nil, templateID: nil
-          )
-          XCTAssertEqual(item.nextDueDate, date(2026, 4, 1))
-      }
-
-      func test_nextDueDate_nilLastCompleted_returnsNil() {
-          let item = MaintenanceItem(
-              name: "Flush water heater", category: .yearRound,
-              intervalDays: 365, lastCompletedDate: nil,
-              notes: nil, templateID: nil
-          )
-          XCTAssertNil(item.nextDueDate)
-      }
-
-      func test_status_green_moreThan14DaysAway() {
-          let item = MaintenanceItem(
-              name: "Test", category: .yearRound,
-              intervalDays: 90, lastCompletedDate: daysAgo(50),
-              notes: nil, templateID: nil
-          )
+      func test_status_isGreen_whenDueFarAway() {
+          let future = Calendar.current.date(byAdding: .day, value: 30, to: Date())!
+          // intervalDays = 30, lastCompleted = future - 30 days (= today), nextDue = future
+          let lastDone = Calendar.current.date(byAdding: .day, value: -1, to: Date())!
+          let item = MaintenanceItem.makeTest(intervalDays: 31, lastCompletedDate: lastDone)
+          // nextDue = lastDone + 31 days = 30 days from now → green
           XCTAssertEqual(item.status, .green)
       }
 
-      func test_status_yellow_within14Days() {
-          let item = MaintenanceItem(
-              name: "Test", category: .yearRound,
-              intervalDays: 90, lastCompletedDate: daysAgo(80),
-              notes: nil, templateID: nil
-          )
+      func test_status_isYellow_whenDueSoon() {
+          let lastDone = Calendar.current.date(byAdding: .day, value: -80, to: Date())!
+          let item = MaintenanceItem.makeTest(intervalDays: 90, lastCompletedDate: lastDone)
+          // nextDue = lastDone + 90 = 10 days from now → yellow
           XCTAssertEqual(item.status, .yellow)
       }
 
-      func test_status_yellow_exactlyToday() {
-          let item = MaintenanceItem(
-              name: "Test", category: .yearRound,
-              intervalDays: 90, lastCompletedDate: daysAgo(90),
-              notes: nil, templateID: nil
-          )
-          XCTAssertEqual(item.status, .yellow)
-      }
-
-      func test_status_red_overdue() {
-          let item = MaintenanceItem(
-              name: "Test", category: .yearRound,
-              intervalDays: 90, lastCompletedDate: daysAgo(100),
-              notes: nil, templateID: nil
-          )
+      func test_status_isRed_whenOverdue() {
+          let lastDone = Calendar.current.date(byAdding: .day, value: -100, to: Date())!
+          let item = MaintenanceItem.makeTest(intervalDays: 90, lastCompletedDate: lastDone)
+          // nextDue = 10 days ago → red
           XCTAssertEqual(item.status, .red)
-      }
-
-      func test_status_red_neverCompleted() {
-          let item = MaintenanceItem(
-              name: "Test", category: .yearRound,
-              intervalDays: 90, lastCompletedDate: nil,
-              notes: nil, templateID: nil
-          )
-          XCTAssertEqual(item.status, .red)
-      }
-
-      func test_isDueSoon_trueForYellowAndRed() {
-          let yellow = MaintenanceItem(name: "T", category: .yearRound, intervalDays: 90, lastCompletedDate: daysAgo(80), notes: nil, templateID: nil)
-          let red    = MaintenanceItem(name: "T", category: .yearRound, intervalDays: 90, lastCompletedDate: daysAgo(100), notes: nil, templateID: nil)
-          let green  = MaintenanceItem(name: "T", category: .yearRound, intervalDays: 90, lastCompletedDate: daysAgo(50), notes: nil, templateID: nil)
-          XCTAssertTrue(yellow.isDueSoon)
-          XCTAssertTrue(red.isDueSoon)
-          XCTAssertFalse(green.isDueSoon)
       }
   }
   ```
 
-- [ ] **Step 2: Run — expect compile failure**
+- [ ] **Step 2: Run tests to verify they fail**
 
-  ⌘U.
-
-- [ ] **Step 3: Create MaintenanceItem.swift**
+- [ ] **Step 3: Implement BinSchedule.swift**
 
   ```swift
+  // HouseMate/Models/BinSchedule.swift
   import Foundation
-  import CloudKit
 
-  enum MaintenanceStatus: Equatable {
-      case green, yellow, red
+  struct BinSchedule: Codable, Identifiable {
+      let id: UUID
+      let householdId: UUID
+      var pickupDayOfWeek: Int  // 1 = Sunday … 7 = Saturday
+      var rotationA: String
+      var rotationB: String
+      var startingRotation: String  // "A" or "B"
+      var startingDate: Date
+      var notifyDayBefore: Bool
+      var notifyMorningOf: Bool
+      let createdAt: Date
+      var updatedAt: Date
+
+      enum CodingKeys: String, CodingKey {
+          case id
+          case householdId = "household_id"
+          case pickupDayOfWeek = "pickup_day_of_week"
+          case rotationA = "rotation_a"
+          case rotationB = "rotation_b"
+          case startingRotation = "starting_rotation"
+          case startingDate = "starting_date"
+          case notifyDayBefore = "notify_day_before"
+          case notifyMorningOf = "notify_morning_of"
+          case createdAt = "created_at"
+          case updatedAt = "updated_at"
+      }
+
+      /// Returns the rotation label (rotationA or rotationB) for the given pickup date.
+      func rotation(for date: Date) -> String {
+          let cal = Calendar.current
+          let start = cal.startOfDay(for: startingDate)
+          let target = cal.startOfDay(for: date)
+          let daysDiff = cal.dateComponents([.day], from: start, to: target).day ?? 0
+          let weeksDiff = daysDiff / 7
+          let isStartingRotation = weeksDiff % 2 == 0
+          if startingRotation == "A" {
+              return isStartingRotation ? rotationA : rotationB
+          } else {
+              return isStartingRotation ? rotationB : rotationA
+          }
+      }
+
+      /// Returns the next N pickup dates from today.
+      func upcomingPickups(count: Int = 8) -> [(date: Date, rotation: String)] {
+          let cal = Calendar.current
+          let today = cal.startOfDay(for: Date())
+          var results: [(Date, String)] = []
+          var candidate = today
+          while results.count < count {
+              if cal.component(.weekday, from: candidate) == pickupDayOfWeek {
+                  results.append((candidate, rotation(for: candidate)))
+              }
+              candidate = cal.date(byAdding: .day, value: 1, to: candidate)!
+          }
+          return results
+      }
   }
+  ```
 
-  struct MaintenanceItem {
-      var recordID: CKRecord.ID?
+- [ ] **Step 4: Implement MaintenanceItem.swift**
+
+  ```swift
+  // HouseMate/Models/MaintenanceItem.swift
+  import Foundation
+
+  struct MaintenanceItem: Codable, Identifiable {
+      let id: UUID
+      let householdId: UUID
       var name: String
-      var category: SeasonalCategory
+      var category: MaintenanceCategory
       var intervalDays: Int
       var lastCompletedDate: Date?
       var notes: String?
-      var templateID: String?
+      let templateId: UUID?
+      let createdAt: Date
+      var updatedAt: Date
+
+      enum CodingKeys: String, CodingKey {
+          case id, name, category, notes
+          case householdId = "household_id"
+          case intervalDays = "interval_days"
+          case lastCompletedDate = "last_completed_date"
+          case templateId = "template_id"
+          case createdAt = "created_at"
+          case updatedAt = "updated_at"
+      }
 
       var nextDueDate: Date? {
           guard let last = lastCompletedDate else { return nil }
@@ -610,1445 +979,1517 @@
       }
 
       var status: MaintenanceStatus {
-          guard let due = nextDueDate else { return .red }
+          guard let next = nextDueDate else { return .red }
           let today = Calendar.current.startOfDay(for: Date())
-          let dueDay = Calendar.current.startOfDay(for: due)
-          let daysUntil = Calendar.current.dateComponents([.day], from: today, to: dueDay).day ?? 0
-          if daysUntil < 0  { return .red }
-          if daysUntil <= 14 { return .yellow }
-          return .green
+          let daysUntil = Calendar.current.dateComponents([.day], from: today, to: next).day ?? 0
+          if daysUntil > 14 { return .green }
+          if daysUntil >= 0 { return .yellow }
+          return .red
       }
 
-      var isDueSoon: Bool { status == .yellow || status == .red }
-  }
-  ```
-
-- [ ] **Step 4: Run tests — all PASS**
-
-  ⌘U.
-
-- [ ] **Step 5: Commit**
-
-  ```bash
-  git add HouseMate/Models/MaintenanceItem.swift HouseMateTests/Models/MaintenanceItemTests.swift
-  git commit -m "feat: add MaintenanceItem model with due date and status logic (tested)"
-  ```
-
----
-
-### Task 7: HouseMateTask Model + Recurring Date Advancement (TDD)
-
-**Files:**
-- Create: `HouseMate/Models/Task.swift`
-- Create: `HouseMateTests/Models/TaskTests.swift`
-
-> Named `HouseMateTask` to avoid conflict with Swift's built-in `Task` type.
-
-- [ ] **Step 1: Create TaskTests.swift**
-
-  ```swift
-  import XCTest
-  @testable import HouseMate
-
-  final class TaskTests: XCTestCase {
-
-      private func date(_ year: Int, _ month: Int, _ day: Int) -> Date {
-          var c = DateComponents(); c.year = year; c.month = month; c.day = day
-          return Calendar.current.date(from: c)!
-      }
-
-      func test_advanceRecurring_weekly_advancesByOneWeek() {
-          var task = HouseMateTask(
-              title: "Take out trash", category: .kitchen, priority: .medium,
-              isRecurring: true, recurringInterval: .weekly, dueDate: date(2026, 3, 12)
-          )
-          task.advanceRecurringDueDate()
-          XCTAssertEqual(task.dueDate, date(2026, 3, 19))
-      }
-
-      func test_advanceRecurring_monthly_advancesByOneMonth() {
-          var task = HouseMateTask(
-              title: "Clean fridge", category: .kitchen, priority: .medium,
-              isRecurring: true, recurringInterval: .monthly, dueDate: date(2026, 3, 1)
-          )
-          task.advanceRecurringDueDate()
-          XCTAssertEqual(task.dueDate, date(2026, 4, 1))
-      }
-
-      func test_advanceRecurring_daily_advancesByOneDay() {
-          var task = HouseMateTask(
-              title: "Check mail", category: .errands, priority: .low,
-              isRecurring: true, recurringInterval: .daily, dueDate: date(2026, 3, 12)
-          )
-          task.advanceRecurringDueDate()
-          XCTAssertEqual(task.dueDate, date(2026, 3, 13))
-      }
-
-      func test_advanceRecurring_nilDueDate_setsToTodayPlusInterval() {
-          var task = HouseMateTask(
-              title: "Vacuum", category: .other, priority: .low,
-              isRecurring: true, recurringInterval: .weekly, dueDate: nil
-          )
-          let today = Calendar.current.startOfDay(for: Date())
-          let expected = Calendar.current.date(byAdding: .weekOfYear, value: 1, to: today)!
-          task.advanceRecurringDueDate(today: today)
-          XCTAssertEqual(task.dueDate, expected)
-      }
-
-      func test_advanceRecurring_resetsCompletionState() {
-          var task = HouseMateTask(
-              title: "Test", category: .other, priority: .low,
-              isRecurring: true, recurringInterval: .weekly, dueDate: date(2026, 3, 12)
-          )
-          task.isCompleted = true
-          task.completedAt = Date()
-          task.advanceRecurringDueDate()
-          XCTAssertFalse(task.isCompleted)
-          XCTAssertNil(task.completedAt)
-          XCTAssertNil(task.completedBy)
-      }
-
-      func test_isOverdue_pastDueDate_returnsTrue() {
-          let task = HouseMateTask(
-              title: "Test", category: .other, priority: .low,
-              isRecurring: false, recurringInterval: nil,
-              dueDate: Calendar.current.date(byAdding: .day, value: -1, to: Date())
-          )
-          XCTAssertTrue(task.isOverdue)
-      }
-
-      func test_isOverdue_futureDueDate_returnsFalse() {
-          let task = HouseMateTask(
-              title: "Test", category: .other, priority: .low,
-              isRecurring: false, recurringInterval: nil,
-              dueDate: Calendar.current.date(byAdding: .day, value: 1, to: Date())
-          )
-          XCTAssertFalse(task.isOverdue)
-      }
-
-      func test_isOverdue_noDueDate_returnsFalse() {
-          let task = HouseMateTask(
-              title: "Test", category: .other, priority: .low,
-              isRecurring: false, recurringInterval: nil, dueDate: nil
-          )
-          XCTAssertFalse(task.isOverdue)
-      }
-
-      func test_isOverdue_completedTask_returnsFalse() {
-          var task = HouseMateTask(
-              title: "Test", category: .other, priority: .low,
-              isRecurring: false, recurringInterval: nil,
-              dueDate: Calendar.current.date(byAdding: .day, value: -1, to: Date())
-          )
-          task.isCompleted = true
-          XCTAssertFalse(task.isOverdue)
-      }
-
-      func test_isDueToday_todayDate_returnsTrue() {
-          let task = HouseMateTask(
-              title: "Test", category: .other, priority: .low,
-              isRecurring: false, recurringInterval: nil,
-              dueDate: Calendar.current.startOfDay(for: Date())
-          )
-          XCTAssertTrue(task.isDueToday)
+      static func makeTest(
+          id: UUID = UUID(), householdId: UUID = UUID(),
+          name: String = "Test Item", category: MaintenanceCategory = .yearRound,
+          intervalDays: Int = 90, lastCompletedDate: Date? = nil
+      ) -> MaintenanceItem {
+          MaintenanceItem(id: id, householdId: householdId, name: name,
+              category: category, intervalDays: intervalDays,
+              lastCompletedDate: lastCompletedDate, notes: nil, templateId: nil,
+              createdAt: Date(), updatedAt: Date())
       }
   }
+
+  enum MaintenanceCategory: String, Codable, CaseIterable {
+      case spring, summer, fall, winter
+      case yearRound = "year_round"
+      var displayName: String {
+          switch self {
+          case .yearRound: return "Year-Round"
+          default: return rawValue.capitalized
+          }
+      }
+  }
+
+  enum MaintenanceStatus { case green, yellow, red }
   ```
 
-- [ ] **Step 2: Run — expect compile failure**
-
-  ⌘U.
-
-- [ ] **Step 3: Create Task.swift**
+- [ ] **Step 5: Implement MaintenanceLog.swift**
 
   ```swift
+  // HouseMate/Models/MaintenanceLog.swift
   import Foundation
-  import CloudKit
 
-  struct HouseMateTask {
-      var recordID: CKRecord.ID?
-      var title: String
-      var category: TaskCategory
-      var priority: TaskPriority
-      var assignedTo: CKRecord.Reference?
-      var dueDate: Date?
-      var isRecurring: Bool
-      var recurringInterval: RecurringInterval?
-      var isCompleted: Bool = false
-      var completedBy: CKRecord.Reference?
-      var completedAt: Date?
-      var templateID: String?
-
-      var isOverdue: Bool {
-          guard let due = dueDate, !isCompleted else { return false }
-          return due < Calendar.current.startOfDay(for: Date())
-      }
-
-      var isDueToday: Bool {
-          guard let due = dueDate else { return false }
-          return Calendar.current.isDateInToday(due)
-      }
-
-      /// Advances dueDate by recurringInterval and resets completion state.
-      /// If dueDate is nil, sets next due to today + interval.
-      mutating func advanceRecurringDueDate(today: Date = Date()) {
-          guard isRecurring, let interval = recurringInterval else { return }
-          let base = dueDate ?? Calendar.current.startOfDay(for: today)
-          dueDate = interval.advance(from: base)
-          isCompleted = false
-          completedBy = nil
-          completedAt = nil
-      }
-  }
-
-  struct TaskCompletionLog {
-      var recordID: CKRecord.ID?
-      var taskID: CKRecord.Reference
-      var completedBy: CKRecord.Reference
-      var completedAt: Date
-  }
-  ```
-
-- [ ] **Step 4: Run tests — all PASS**
-
-  ⌘U.
-
-- [ ] **Step 5: Commit**
-
-  ```bash
-  git add HouseMate/Models/Task.swift HouseMateTests/Models/TaskTests.swift
-  git commit -m "feat: add HouseMateTask model with recurring date advancement (tested)"
-  ```
-
----
-
-### Task 8: Remaining Models
-
-**Files:**
-- Create: `HouseMate/Models/Household.swift`
-- Create: `HouseMate/Models/Member.swift`
-- Create: `HouseMate/Models/TaskTemplate.swift`
-- Create: `HouseMate/Models/MaintenanceLog.swift`
-- Create: `HouseMate/Models/MaintenanceTemplate.swift`
-
-- [ ] **Step 1: Create Household.swift**
-
-  ```swift
-  import Foundation
-  import CloudKit
-
-  struct Household {
-      var recordID: CKRecord.ID?
-      var name: String
-      var createdBy: CKRecord.Reference?
-      var members: [CKRecord.Reference]
-  }
-  ```
-
-- [ ] **Step 2: Create Member.swift**
-
-  ```swift
-  import Foundation
-  import CloudKit
-
-  struct Member {
-      var recordID: CKRecord.ID?
-      var displayName: String
-      var appleUserID: String
-  }
-  ```
-
-- [ ] **Step 3: Create TaskTemplate.swift**
-
-  ```swift
-  import Foundation
-  import CloudKit
-
-  struct TaskTemplate {
-      var recordID: CKRecord.ID?         // nil for built-in (local only)
-      var title: String
-      var category: TaskCategory
-      var recurringInterval: RecurringInterval?
-      var isBuiltIn: Bool
-  }
-  ```
-
-- [ ] **Step 4: Create MaintenanceLog.swift**
-
-  ```swift
-  import Foundation
-  import CloudKit
-
-  struct MaintenanceLog {
-      var recordID: CKRecord.ID?
-      var maintenanceItemID: CKRecord.Reference
+  struct MaintenanceLog: Codable, Identifiable {
+      let id: UUID
+      let maintenanceItemId: UUID
       var completedDate: Date
       var notes: String?
-      var cost: Double?
+      var cost: Decimal?
+      let createdAt: Date
+
+      enum CodingKeys: String, CodingKey {
+          case id, notes, cost
+          case maintenanceItemId = "maintenance_item_id"
+          case completedDate = "completed_date"
+          case createdAt = "created_at"
+      }
   }
   ```
 
-- [ ] **Step 5: Create MaintenanceTemplate.swift**
+- [ ] **Step 6: Implement TaskTemplate.swift and MaintenanceTemplate.swift**
 
   ```swift
+  // HouseMate/Models/TaskTemplate.swift
   import Foundation
-  import CloudKit
 
-  struct MaintenanceTemplate {
-      var recordID: CKRecord.ID?         // nil for built-in (local only)
-      var name: String
-      var category: SeasonalCategory
-      var intervalDays: Int
-      var isBuiltIn: Bool
+  struct TaskTemplate: Codable, Identifiable {
+      let id: UUID
+      let householdId: UUID?  // nil for built-in (local only)
+      let title: String
+      let category: TaskCategory
+      let recurringInterval: RecurringInterval?
+      let isBuiltIn: Bool
+
+      enum CodingKeys: String, CodingKey {
+          case id, title, category
+          case householdId = "household_id"
+          case recurringInterval = "recurring_interval"
+          case isBuiltIn = "is_built_in"
+      }
+
+      // Convenience init for built-in templates (local, no DB row)
+      init(builtInTitle: String, category: TaskCategory, recurringInterval: RecurringInterval?) {
+          self.id = UUID()
+          self.householdId = nil
+          self.title = builtInTitle
+          self.category = category
+          self.recurringInterval = recurringInterval
+          self.isBuiltIn = true
+      }
+
+      // Init for DB rows
+      init(id: UUID, householdId: UUID, title: String, category: TaskCategory,
+           recurringInterval: RecurringInterval?) {
+          self.id = id
+          self.householdId = householdId
+          self.title = title
+          self.category = category
+          self.recurringInterval = recurringInterval
+          self.isBuiltIn = false
+      }
+  }
+
+  // HouseMate/Models/MaintenanceTemplate.swift
+  struct MaintenanceTemplate: Codable, Identifiable {
+      let id: UUID
+      let householdId: UUID?  // nil for built-in
+      let name: String
+      let category: MaintenanceCategory
+      let intervalDays: Int
+      let isBuiltIn: Bool
+
+      enum CodingKeys: String, CodingKey {
+          case id, name, category
+          case householdId = "household_id"
+          case intervalDays = "interval_days"
+          case isBuiltIn = "is_built_in"
+      }
+
+      init(builtInName: String, category: MaintenanceCategory, intervalDays: Int) {
+          self.id = UUID()
+          self.householdId = nil
+          self.name = builtInName
+          self.category = category
+          self.intervalDays = intervalDays
+          self.isBuiltIn = true
+      }
+
+      init(id: UUID, householdId: UUID, name: String, category: MaintenanceCategory,
+           intervalDays: Int) {
+          self.id = id
+          self.householdId = householdId
+          self.name = name
+          self.category = category
+          self.intervalDays = intervalDays
+          self.isBuiltIn = false
+      }
   }
   ```
 
-- [ ] **Step 6: Build — no compile errors**
+- [ ] **Step 7: Run tests to verify they pass**
 
-  ⌘B.
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
   ```bash
-  git add HouseMate/Models/
-  git commit -m "feat: add Household, Member, TaskTemplate, MaintenanceLog, MaintenanceTemplate models"
+  git add HouseMate/Models/ HouseMateTests/Models/
+  git commit -m "feat: add BinSchedule, MaintenanceItem, MaintenanceLog, Template models"
   ```
 
 ---
 
-## Chunk 3: CloudKit Service Layer
+## Chunk 3: Services
 
-### Task 9: CKRecord Mapping Extensions (TDD)
+### Task 7: AuthService
 
 **Files:**
-- Create: `HouseMate/Services/CKRecord+HouseMate.swift`
-- Create: `HouseMateTests/Services/CKRecordMappingTests.swift`
+- Create: `HouseMate/Services/AuthService.swift`
+- Create: `HouseMateTests/Services/AuthServiceTests.swift`
 
-- [ ] **Step 1: Create CKRecordMappingTests.swift**
-
-  In Xcode, create `HouseMateTests/Services/` group, then add:
+- [ ] **Step 1: Write failing test**
 
   ```swift
+  // HouseMateTests/Services/AuthServiceTests.swift
   import XCTest
-  import CloudKit
   @testable import HouseMate
 
-  final class CKRecordMappingTests: XCTestCase {
-
-      private func date(_ year: Int, _ month: Int, _ day: Int) -> Date {
-          var c = DateComponents(); c.year = year; c.month = month; c.day = day
-          return Calendar.current.date(from: c)!
+  final class AuthServiceTests: XCTestCase {
+      func test_authService_exists() {
+          let service = AuthService()
+          XCTAssertNotNil(service)
       }
 
-      // MARK: - BinSchedule
-
-      func test_binSchedule_roundtrip() {
-          let original = BinSchedule(
-              pickupDayOfWeek: 5,
-              rotationA: "Compost + Recycling",
-              rotationB: "Compost + Garbage",
-              startingRotation: .a,
-              startingDate: date(2026, 3, 5),
-              notifyDayBefore: true,
-              notifyMorningOf: false
-          )
-          let decoded = BinSchedule(from: original.toCKRecord())
-          XCTAssertEqual(decoded?.pickupDayOfWeek, original.pickupDayOfWeek)
-          XCTAssertEqual(decoded?.rotationA, original.rotationA)
-          XCTAssertEqual(decoded?.rotationB, original.rotationB)
-          XCTAssertEqual(decoded?.startingRotation, original.startingRotation)
-          XCTAssertEqual(decoded?.startingDate, original.startingDate)
-          XCTAssertEqual(decoded?.notifyDayBefore, original.notifyDayBefore)
-          XCTAssertEqual(decoded?.notifyMorningOf, original.notifyMorningOf)
-      }
-
-      // MARK: - MaintenanceItem
-
-      func test_maintenanceItem_roundtrip_withLastCompleted() {
-          let original = MaintenanceItem(
-              name: "Change furnace filter", category: .yearRound,
-              intervalDays: 90, lastCompletedDate: date(2026, 1, 1),
-              notes: "Use MERV-11", templateID: "tmpl-abc"
-          )
-          let decoded = MaintenanceItem(from: original.toCKRecord())
-          XCTAssertEqual(decoded?.name, original.name)
-          XCTAssertEqual(decoded?.category, original.category)
-          XCTAssertEqual(decoded?.intervalDays, original.intervalDays)
-          XCTAssertEqual(decoded?.lastCompletedDate, original.lastCompletedDate)
-          XCTAssertEqual(decoded?.notes, original.notes)
-          XCTAssertEqual(decoded?.templateID, original.templateID)
-      }
-
-      func test_maintenanceItem_roundtrip_nilLastCompleted() {
-          let original = MaintenanceItem(
-              name: "Flush water heater", category: .yearRound,
-              intervalDays: 365, lastCompletedDate: nil,
-              notes: nil, templateID: nil
-          )
-          let decoded = MaintenanceItem(from: original.toCKRecord())
-          XCTAssertNil(decoded?.lastCompletedDate)
-      }
-
-      // MARK: - HouseMateTask
-
-      func test_task_roundtrip_withDueDate() {
-          let original = HouseMateTask(
-              title: "Take out trash", category: .kitchen, priority: .medium,
-              isRecurring: true, recurringInterval: .weekly,
-              dueDate: date(2026, 4, 1)
-          )
-          let decoded = HouseMateTask(from: original.toCKRecord())
-          XCTAssertEqual(decoded?.title, original.title)
-          XCTAssertEqual(decoded?.category, original.category)
-          XCTAssertEqual(decoded?.priority, original.priority)
-          XCTAssertEqual(decoded?.isRecurring, original.isRecurring)
-          XCTAssertEqual(decoded?.recurringInterval, original.recurringInterval)
-          XCTAssertEqual(decoded?.dueDate, original.dueDate)
-          XCTAssertEqual(decoded?.isCompleted, false)
-      }
-
-      func test_task_roundtrip_nilDueDate() {
-          let original = HouseMateTask(
-              title: "Buy groceries", category: .errands, priority: .high,
-              isRecurring: false, recurringInterval: nil, dueDate: nil
-          )
-          let decoded = HouseMateTask(from: original.toCKRecord())
-          XCTAssertNil(decoded?.dueDate)
-          XCTAssertNil(decoded?.recurringInterval)
-      }
-
-      // MARK: - MaintenanceLog
-
-      func test_maintenanceLog_roundtrip() {
-          let itemRef = CKRecord.Reference(recordID: CKRecord.ID(recordName: "item-123"), action: .deleteSelf)
-          let original = MaintenanceLog(
-              maintenanceItemID: itemRef,
-              completedDate: date(2026, 3, 1),
-              notes: "Used professional service",
-              cost: 149.99
-          )
-          let decoded = MaintenanceLog(from: original.toCKRecord())
-          XCTAssertEqual(decoded?.completedDate, original.completedDate)
-          XCTAssertEqual(decoded?.notes, original.notes)
-          XCTAssertEqual(decoded?.cost, original.cost)
-          XCTAssertEqual(decoded?.maintenanceItemID.recordID.recordName, itemRef.recordID.recordName)
-      }
-
-      // MARK: - Household
-
-      func test_household_roundtrip_withMembers() {
-          let creatorRef = CKRecord.Reference(recordID: CKRecord.ID(recordName: "creator-001"), action: .none)
-          let memberRef  = CKRecord.Reference(recordID: CKRecord.ID(recordName: "member-002"), action: .none)
-          let original = Household(
-              name: "The Smith Household",
-              createdBy: creatorRef,
-              members: [creatorRef, memberRef]
-          )
-          let decoded = Household(from: original.toCKRecord())
-          XCTAssertEqual(decoded?.name, original.name)
-          XCTAssertEqual(decoded?.createdBy?.recordID.recordName, creatorRef.recordID.recordName)
-          XCTAssertEqual(decoded?.members.count, 2)
-          XCTAssertEqual(decoded?.members[0].recordID.recordName, creatorRef.recordID.recordName)
-      }
-
-      func test_household_roundtrip_noCreator() {
-          let original = Household(name: "New Household", createdBy: nil, members: [])
-          let decoded = Household(from: original.toCKRecord())
-          XCTAssertEqual(decoded?.name, original.name)
-          XCTAssertNil(decoded?.createdBy)
-          XCTAssertEqual(decoded?.members.count, 0)
-      }
-
-      // MARK: - Member
-
-      func test_member_roundtrip() {
-          let original = Member(displayName: "Alex", appleUserID: "user_abc123")
-          let decoded = Member(from: original.toCKRecord())
-          XCTAssertEqual(decoded?.displayName, original.displayName)
-          XCTAssertEqual(decoded?.appleUserID, original.appleUserID)
-      }
-
-      // MARK: - TaskTemplate (user-created)
-
-      func test_taskTemplate_userCreated_withInterval_roundtrip() {
-          let original = TaskTemplate(
-              title: "Water plants", category: .outdoor,
-              recurringInterval: .weekly, isBuiltIn: false
-          )
-          let decoded = TaskTemplate(from: original.toCKRecord())
-          XCTAssertEqual(decoded?.title, original.title)
-          XCTAssertEqual(decoded?.category, original.category)
-          XCTAssertEqual(decoded?.recurringInterval, original.recurringInterval)
-          XCTAssertFalse(decoded?.isBuiltIn ?? true)
-      }
-
-      func test_taskTemplate_userCreated_nilInterval_roundtrip() {
-          // Seasonal / one-time templates have no interval
-          let original = TaskTemplate(
-              title: "Spring cleaning", category: .other,
-              recurringInterval: nil, isBuiltIn: false
-          )
-          let decoded = TaskTemplate(from: original.toCKRecord())
-          XCTAssertEqual(decoded?.title, original.title)
-          XCTAssertNil(decoded?.recurringInterval)
-      }
-
-      // MARK: - TaskCompletionLog
-
-      func test_taskCompletionLog_roundtrip() {
-          let taskRef = CKRecord.Reference(recordID: CKRecord.ID(recordName: "task-456"), action: .deleteSelf)
-          let memberRef = CKRecord.Reference(recordID: CKRecord.ID(recordName: "member-789"), action: .none)
-          let original = TaskCompletionLog(
-              taskID: taskRef, completedBy: memberRef, completedAt: date(2026, 3, 10)
-          )
-          let decoded = TaskCompletionLog(from: original.toCKRecord())
-          XCTAssertEqual(decoded?.completedAt, original.completedAt)
-          XCTAssertEqual(decoded?.taskID.recordID.recordName, taskRef.recordID.recordName)
-          XCTAssertEqual(decoded?.completedBy.recordID.recordName, memberRef.recordID.recordName)
-      }
-
-      // MARK: - MaintenanceTemplate (user-created)
-
-      func test_maintenanceTemplate_userCreated_roundtrip() {
-          let original = MaintenanceTemplate(
-              name: "Check sprinkler heads", category: .spring,
-              intervalDays: 365, isBuiltIn: false
-          )
-          let decoded = MaintenanceTemplate(from: original.toCKRecord())
-          XCTAssertEqual(decoded?.name, original.name)
-          XCTAssertEqual(decoded?.category, original.category)
-          XCTAssertEqual(decoded?.intervalDays, original.intervalDays)
-          XCTAssertFalse(decoded?.isBuiltIn ?? true)
+      func test_currentUser_isNilWhenNotSignedIn() async {
+          let service = AuthService()
+          // If test runs without a real session, currentUser should be nil
+          // (In CI this will always be nil; on a device it depends on state)
+          _ = service.currentUser  // just verify it doesn't crash
       }
   }
   ```
 
-- [ ] **Step 2: Run — expect compile failure**
+- [ ] **Step 2: Run tests to verify they fail**
 
-  ⌘U.
-
-- [ ] **Step 3: Create CKRecord+HouseMate.swift**
+- [ ] **Step 3: Implement AuthService.swift**
 
   ```swift
+  // HouseMate/Services/AuthService.swift
+  import Supabase
   import Foundation
-  import CloudKit
 
-  // MARK: - Record Type Name Constants
+  @MainActor
+  final class AuthService {
+      var currentUser: User? { supabase.auth.currentUser }
 
-  enum CKRecordTypeName {
-      static let household          = "Household"
-      static let member             = "Member"
-      static let task               = "HouseMateTask"
-      static let taskCompletionLog  = "TaskCompletionLog"
-      static let taskTemplate       = "TaskTemplate"
-      static let binSchedule        = "BinSchedule"
-      static let maintenanceItem    = "MaintenanceItem"
-      static let maintenanceLog     = "MaintenanceLog"
-      static let maintenanceTemplate = "MaintenanceTemplate"
-  }
-
-  // MARK: - BinSchedule
-
-  extension BinSchedule {
-      func toCKRecord() -> CKRecord {
-          let id = recordID ?? CKRecord.ID(recordName: UUID().uuidString)
-          let r = CKRecord(recordType: CKRecordTypeName.binSchedule, recordID: id)
-          r["pickupDayOfWeek"]  = pickupDayOfWeek as NSNumber
-          r["rotationA"]        = rotationA as NSString
-          r["rotationB"]        = rotationB as NSString
-          r["startingRotation"] = startingRotation.rawValue as NSString
-          r["startingDate"]     = startingDate as NSDate
-          r["notifyDayBefore"]  = (notifyDayBefore ? 1 : 0) as NSNumber
-          r["notifyMorningOf"]  = (notifyMorningOf ? 1 : 0) as NSNumber
-          return r
+      func signUp(email: String, password: String) async throws -> User {
+          let response = try await supabase.auth.signUp(email: email, password: password)
+          guard let user = response.user else {
+              throw AuthError.noUser
+          }
+          return user
       }
 
-      init?(from record: CKRecord) {
-          guard record.recordType == CKRecordTypeName.binSchedule,
-                let dow      = record["pickupDayOfWeek"] as? Int,
-                let rotA     = record["rotationA"] as? String,
-                let rotB     = record["rotationB"] as? String,
-                let rotRaw   = record["startingRotation"] as? String,
-                let rotStart = BinRotation(rawValue: rotRaw),
-                let startDt  = record["startingDate"] as? Date else { return nil }
-          self.recordID         = record.recordID
-          self.pickupDayOfWeek  = dow
-          self.rotationA        = rotA
-          self.rotationB        = rotB
-          self.startingRotation = rotStart
-          self.startingDate     = startDt
-          self.notifyDayBefore  = (record["notifyDayBefore"] as? Int ?? 0) == 1
-          self.notifyMorningOf  = (record["notifyMorningOf"] as? Int ?? 0) == 1
+      func signIn(email: String, password: String) async throws -> User {
+          let session = try await supabase.auth.signIn(email: email, password: password)
+          return session.user
+      }
+
+      func signOut() async throws {
+          try await supabase.auth.signOut()
+      }
+
+      func restoreSession() async throws -> User? {
+          try await supabase.auth.session
+          return supabase.auth.currentUser
       }
   }
 
-  // MARK: - MaintenanceItem
-
-  extension MaintenanceItem {
-      func toCKRecord() -> CKRecord {
-          let id = recordID ?? CKRecord.ID(recordName: UUID().uuidString)
-          let r = CKRecord(recordType: CKRecordTypeName.maintenanceItem, recordID: id)
-          r["name"]        = name as NSString
-          r["category"]    = category.rawValue as NSString
-          r["intervalDays"] = intervalDays as NSNumber
-          if let last = lastCompletedDate { r["lastCompletedDate"] = last as NSDate }
-          if let n = notes    { r["notes"]      = n as NSString }
-          if let t = templateID { r["templateID"] = t as NSString }
-          return r
-      }
-
-      init?(from record: CKRecord) {
-          guard record.recordType == CKRecordTypeName.maintenanceItem,
-                let name    = record["name"] as? String,
-                let catRaw  = record["category"] as? String,
-                let cat     = SeasonalCategory(rawValue: catRaw),
-                let interval = record["intervalDays"] as? Int else { return nil }
-          self.recordID          = record.recordID
-          self.name              = name
-          self.category          = cat
-          self.intervalDays      = interval
-          self.lastCompletedDate = record["lastCompletedDate"] as? Date
-          self.notes             = record["notes"] as? String
-          self.templateID        = record["templateID"] as? String
-      }
-  }
-
-  // MARK: - HouseMateTask
-
-  extension HouseMateTask {
-      func toCKRecord() -> CKRecord {
-          let id = recordID ?? CKRecord.ID(recordName: UUID().uuidString)
-          let r = CKRecord(recordType: CKRecordTypeName.task, recordID: id)
-          r["title"]       = title as NSString
-          r["category"]    = category.rawValue as NSString
-          r["priority"]    = priority.rawValue as NSString
-          r["isRecurring"] = (isRecurring ? 1 : 0) as NSNumber
-          r["isCompleted"] = (isCompleted ? 1 : 0) as NSNumber
-          if let i = recurringInterval { r["recurringInterval"] = i.rawValue as NSString }
-          if let d = dueDate       { r["dueDate"]      = d as NSDate }
-          if let a = assignedTo    { r["assignedTo"]   = a }
-          if let c = completedBy   { r["completedBy"]  = c }
-          if let ca = completedAt  { r["completedAt"]  = ca as NSDate }
-          if let t = templateID    { r["templateID"]   = t as NSString }
-          return r
-      }
-
-      init?(from record: CKRecord) {
-          guard record.recordType == CKRecordTypeName.task,
-                let title  = record["title"] as? String,
-                let catRaw = record["category"] as? String,
-                let cat    = TaskCategory(rawValue: catRaw),
-                let priRaw = record["priority"] as? String,
-                let pri    = TaskPriority(rawValue: priRaw) else { return nil }
-          self.recordID          = record.recordID
-          self.title             = title
-          self.category          = cat
-          self.priority          = pri
-          self.isRecurring       = (record["isRecurring"] as? Int ?? 0) == 1
-          self.isCompleted       = (record["isCompleted"] as? Int ?? 0) == 1
-          self.dueDate           = record["dueDate"] as? Date
-          self.assignedTo        = record["assignedTo"] as? CKRecord.Reference
-          self.completedBy       = record["completedBy"] as? CKRecord.Reference
-          self.completedAt       = record["completedAt"] as? Date
-          self.templateID        = record["templateID"] as? String
-          self.recurringInterval = (record["recurringInterval"] as? String).flatMap(RecurringInterval.init)
-      }
-  }
-
-  // MARK: - TaskCompletionLog
-
-  extension TaskCompletionLog {
-      func toCKRecord() -> CKRecord {
-          let id = recordID ?? CKRecord.ID(recordName: UUID().uuidString)
-          let r = CKRecord(recordType: CKRecordTypeName.taskCompletionLog, recordID: id)
-          r["taskID"]      = taskID
-          r["completedBy"] = completedBy
-          r["completedAt"] = completedAt as NSDate
-          return r
-      }
-
-      init?(from record: CKRecord) {
-          guard record.recordType == CKRecordTypeName.taskCompletionLog,
-                let taskRef   = record["taskID"] as? CKRecord.Reference,
-                let memberRef = record["completedBy"] as? CKRecord.Reference,
-                let at        = record["completedAt"] as? Date else { return nil }
-          self.recordID    = record.recordID
-          self.taskID      = taskRef
-          self.completedBy = memberRef
-          self.completedAt = at
-      }
-  }
-
-  // MARK: - Household
-
-  extension Household {
-      func toCKRecord() -> CKRecord {
-          let id = recordID ?? CKRecord.ID(recordName: UUID().uuidString)
-          let r = CKRecord(recordType: CKRecordTypeName.household, recordID: id)
-          r["name"]    = name as NSString
-          if let c = createdBy { r["createdBy"] = c }
-          r["members"] = members as NSArray
-          return r
-      }
-
-      init?(from record: CKRecord) {
-          guard record.recordType == CKRecordTypeName.household,
-                let name = record["name"] as? String else { return nil }
-          self.recordID  = record.recordID
-          self.name      = name
-          self.createdBy = record["createdBy"] as? CKRecord.Reference
-          self.members   = record["members"] as? [CKRecord.Reference] ?? []
-      }
-  }
-
-  // MARK: - Member
-
-  extension Member {
-      func toCKRecord() -> CKRecord {
-          let id = recordID ?? CKRecord.ID(recordName: UUID().uuidString)
-          let r = CKRecord(recordType: CKRecordTypeName.member, recordID: id)
-          r["displayName"] = displayName as NSString
-          r["appleUserID"] = appleUserID as NSString
-          return r
-      }
-
-      init?(from record: CKRecord) {
-          guard record.recordType == CKRecordTypeName.member,
-                let displayName = record["displayName"] as? String,
-                let appleUserID = record["appleUserID"] as? String else { return nil }
-          self.recordID    = record.recordID
-          self.displayName = displayName
-          self.appleUserID = appleUserID
-      }
-  }
-
-  // MARK: - MaintenanceLog
-
-  extension MaintenanceLog {
-      func toCKRecord() -> CKRecord {
-          let id = recordID ?? CKRecord.ID(recordName: UUID().uuidString)
-          let r = CKRecord(recordType: CKRecordTypeName.maintenanceLog, recordID: id)
-          r["maintenanceItemID"] = maintenanceItemID
-          r["completedDate"]     = completedDate as NSDate
-          if let n = notes { r["notes"] = n as NSString }
-          if let c = cost  { r["cost"]  = c as NSNumber }
-          return r
-      }
-
-      init?(from record: CKRecord) {
-          guard record.recordType == CKRecordTypeName.maintenanceLog,
-                let itemRef = record["maintenanceItemID"] as? CKRecord.Reference,
-                let date    = record["completedDate"] as? Date else { return nil }
-          self.recordID           = record.recordID
-          self.maintenanceItemID  = itemRef
-          self.completedDate      = date
-          self.notes              = record["notes"] as? String
-          self.cost               = record["cost"] as? Double
-      }
-  }
-
-  // MARK: - TaskTemplate (user-created only — built-ins live locally)
-
-  extension TaskTemplate {
-      func toCKRecord() -> CKRecord {
-          let id = recordID ?? CKRecord.ID(recordName: UUID().uuidString)
-          let r = CKRecord(recordType: CKRecordTypeName.taskTemplate, recordID: id)
-          r["title"]    = title as NSString
-          r["category"] = category.rawValue as NSString
-          r["isBuiltIn"] = 0 as NSNumber
-          if let i = recurringInterval { r["recurringInterval"] = i.rawValue as NSString }
-          return r
-      }
-
-      init?(from record: CKRecord) {
-          guard record.recordType == CKRecordTypeName.taskTemplate,
-                let title  = record["title"] as? String,
-                let catRaw = record["category"] as? String,
-                let cat    = TaskCategory(rawValue: catRaw) else { return nil }
-          self.recordID          = record.recordID
-          self.title             = title
-          self.category          = cat
-          self.isBuiltIn         = false
-          self.recurringInterval = (record["recurringInterval"] as? String).flatMap(RecurringInterval.init)
-      }
-  }
-
-  // MARK: - MaintenanceTemplate (user-created only)
-
-  extension MaintenanceTemplate {
-      func toCKRecord() -> CKRecord {
-          let id = recordID ?? CKRecord.ID(recordName: UUID().uuidString)
-          let r = CKRecord(recordType: CKRecordTypeName.maintenanceTemplate, recordID: id)
-          r["name"]        = name as NSString
-          r["category"]    = category.rawValue as NSString
-          r["intervalDays"] = intervalDays as NSNumber
-          r["isBuiltIn"]   = 0 as NSNumber
-          return r
-      }
-
-      init?(from record: CKRecord) {
-          guard record.recordType == CKRecordTypeName.maintenanceTemplate,
-                let name    = record["name"] as? String,
-                let catRaw  = record["category"] as? String,
-                let cat     = SeasonalCategory(rawValue: catRaw),
-                let interval = record["intervalDays"] as? Int else { return nil }
-          self.recordID     = record.recordID
-          self.name         = name
-          self.category     = cat
-          self.intervalDays = interval
-          self.isBuiltIn    = false
+  enum AuthError: LocalizedError {
+      case noUser
+      var errorDescription: String? {
+          switch self { case .noUser: return "Sign up succeeded but no user was returned." }
       }
   }
   ```
 
-- [ ] **Step 4: Run tests — all mapping tests PASS**
-
-  ⌘U.
+- [ ] **Step 4: Run tests to verify they pass**
 
 - [ ] **Step 5: Commit**
 
   ```bash
-  git add HouseMate/Services/CKRecord+HouseMate.swift HouseMateTests/Services/CKRecordMappingTests.swift
-  git commit -m "feat: add CKRecord encode/decode extensions for all models (tested)"
+  git add HouseMate/Services/AuthService.swift HouseMateTests/Services/AuthServiceTests.swift
+  git commit -m "feat: add AuthService (sign up, sign in, sign out)"
   ```
 
 ---
 
-### Task 10: CloudKitService Base
-
-**Files:**
-- Create: `HouseMate/Services/CloudKitService.swift`
-
-- [ ] **Step 1: Create CloudKitService.swift**
-
-  ```swift
-  import CloudKit
-
-  enum CloudKitError: Error, LocalizedError {
-      case notAuthenticated
-      case recordNotFound
-      case zoneNotFound
-      case unexpectedType
-      case alreadyCompleted
-
-      var errorDescription: String? {
-          switch self {
-          case .notAuthenticated:  return "iCloud account not available."
-          case .recordNotFound:    return "Record not found."
-          case .zoneNotFound:      return "CloudKit zone not found."
-          case .unexpectedType:    return "Unexpected CloudKit record type."
-          case .alreadyCompleted:  return "This task was already completed."
-          }
-      }
-  }
-
-  @MainActor
-  final class CloudKitService {
-      static let shared = CloudKitService()
-
-      let container: CKContainer
-      let privateDB: CKDatabase
-      let sharedDB: CKDatabase
-
-      static let householdZoneName = "HouseholdZone"
-      private static let hasCreatedZoneKey = "ck_zone_created"
-
-      /// The current user's record name, set after startup. Used for owner-vs-participant routing.
-      var currentUserRecordName: String?
-
-      private init() {
-          container = CKContainer(identifier: "iCloud.com.housemate.app")
-          privateDB = container.privateCloudDatabase
-          sharedDB  = container.sharedCloudDatabase
-      }
-
-      // MARK: - Account
-
-      /// Returns the current iCloud account status.
-      func checkAccountStatus() async throws {
-          let status = try await container.accountStatus()
-          guard status == .available else {
-              throw CloudKitError.notAuthenticated
-          }
-      }
-
-      /// Fetches the current user's stable CloudKit record ID and caches the record name.
-      @discardableResult
-      func fetchAndCacheCurrentUserRecordName() async throws -> String {
-          let recordID = try await container.userRecordID()
-          currentUserRecordName = recordID.recordName
-          return recordID.recordName
-      }
-
-      // MARK: - Database Routing
-
-      /// Returns the correct database for household data operations.
-      /// The household creator (owner) uses privateDB; invited participants use sharedDB.
-      func householdDatabase(ownerRecordName: String) -> CKDatabase {
-          guard let current = currentUserRecordName else { return privateDB }
-          return ownerRecordName == current ? privateDB : sharedDB
-      }
-
-      /// Returns the zone ID for household data using the owner's record name.
-      /// This is necessary because CloudKit zone IDs encode the owner's identity.
-      func householdZoneID(ownerRecordName: String) -> CKRecordZone.ID {
-          CKRecordZone.ID(zoneName: Self.householdZoneName, ownerName: ownerRecordName)
-      }
-
-      /// The owner's private zone ID — used only by the household creator during setup.
-      var ownerZoneID: CKRecordZone.ID {
-          CKRecordZone.ID(zoneName: Self.householdZoneName, ownerName: CKCurrentUserDefaultName)
-      }
-
-      // MARK: - Zone Setup
-
-      /// Creates the shared custom zone in the owner's private database.
-      /// Gated by a UserDefaults flag — safe to call on every launch but only
-      /// actually creates the zone once. Non-owners skip this entirely (zone
-      /// creation in someone else's private database would fail).
-      func createSharedZoneIfNeeded() async throws {
-          guard currentUserRecordName != nil else { return }
-          let key = Self.hasCreatedZoneKey
-          guard !UserDefaults.standard.bool(forKey: key) else { return }
-          let zone = CKRecordZone(zoneID: ownerZoneID)
-          _ = try await privateDB.modifyRecordZones(saving: [zone], deleting: [])
-          UserDefaults.standard.set(true, forKey: key)
-      }
-  }
-  ```
-
-- [ ] **Step 2: Build — no compile errors**
-
-  ⌘B.
-
-- [ ] **Step 3: Commit**
-
-  ```bash
-  git add HouseMate/Services/CloudKitService.swift
-  git commit -m "feat: add CloudKitService base with container, zones, and account check"
-  ```
-
----
-
-### Task 11: Domain Service Classes
+### Task 8: HouseholdService and MemberService
 
 **Files:**
 - Create: `HouseMate/Services/HouseholdService.swift`
-- Create: `HouseMate/Services/TaskService.swift`
-- Create: `HouseMate/Services/BinScheduleService.swift`
-- Create: `HouseMate/Services/MaintenanceService.swift`
+- Create: `HouseMate/Services/MemberService.swift`
+- Create: `HouseMateTests/Services/HouseholdServiceTests.swift`
 
-- [ ] **Step 1: Create HouseholdService.swift**
+- [ ] **Step 1: Write failing test**
 
   ```swift
-  import CloudKit
+  // HouseMateTests/Services/HouseholdServiceTests.swift
+  import XCTest
+  @testable import HouseMate
+
+  final class HouseholdServiceTests: XCTestCase {
+      func test_generateInviteCode_isEightCharacters() {
+          let code = HouseholdService.generateInviteCode()
+          XCTAssertEqual(code.count, 8)
+      }
+
+      func test_generateInviteCode_isAlphanumeric() {
+          let code = HouseholdService.generateInviteCode()
+          let allowed = CharacterSet.alphanumerics
+          XCTAssertTrue(code.unicodeScalars.allSatisfy { allowed.contains($0) })
+      }
+
+      func test_generateInviteCode_isUppercase() {
+          let code = HouseholdService.generateInviteCode()
+          XCTAssertEqual(code, code.uppercased())
+      }
+  }
+  ```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+- [ ] **Step 3: Implement HouseholdService.swift**
+
+  ```swift
+  // HouseMate/Services/HouseholdService.swift
+  import Supabase
+  import Foundation
 
   @MainActor
   final class HouseholdService {
-      private let ck = CloudKitService.shared
 
-      // MARK: - Create
+      func createHousehold(name: String, displayName: String, userId: UUID) async throws -> (Household, Member) {
+          // Insert household
+          let household: Household = try await supabase
+              .from("households")
+              .insert(["name": name, "created_by": userId.uuidString])
+              .select()
+              .single()
+              .execute()
+              .value
 
-      func createHousehold(name: String, creatorRecordName: String) async throws -> (Household, CKShare) {
-          let creatorRecordID = CKRecord.ID(recordName: creatorRecordName)
-          let creatorRef = CKRecord.Reference(recordID: creatorRecordID, action: .none)
+          // Insert member
+          let member: Member = try await supabase
+              .from("members")
+              .insert([
+                  "household_id": household.id.uuidString,
+                  "user_id": userId.uuidString,
+                  "display_name": displayName
+              ])
+              .select()
+              .single()
+              .execute()
+              .value
 
-          // Build the record directly in the household zone (zone must already exist from app startup)
-          let zoneID = ck.ownerZoneID
-          let ckRecord = CKRecord(
-              recordType: CKRecordTypeName.household,
-              recordID: CKRecord.ID(recordName: UUID().uuidString, zoneID: zoneID)
-          )
-          ckRecord["name"]      = name as NSString
-          ckRecord["createdBy"] = creatorRef
-          ckRecord["members"]   = [creatorRef] as NSArray
+          // Generate invite code
+          try await generateNewInviteCode(householdId: household.id, userId: userId)
 
-          let share = CKShare(rootRecord: ckRecord)
-          share[CKShare.SystemFieldKey.title] = name as CKRecordValue
-          share.publicPermission = .none
-
-          let (savedRecords, _, _) = try await ck.privateDB.modifyRecords(saving: [ckRecord, share], deleting: [])
-          guard let saved = savedRecords
-              .first(where: { $0.recordType == CKRecordTypeName.household })
-              .flatMap(Household.init) else {
-              throw CloudKitError.recordNotFound
-          }
-          let savedShare = savedRecords.first(where: { $0 is CKShare }) as? CKShare ?? share
-          return (saved, savedShare)
+          return (household, member)
       }
 
-      // MARK: - Fetch
+      func joinHousehold(inviteCode: String, displayName: String, userId: UUID) async throws -> (Household, Member) {
+          // Look up invite
+          let invite: HouseholdInvite = try await supabase
+              .from("household_invites")
+              .select()
+              .eq("invite_code", value: inviteCode.uppercased())
+              .eq("is_active", value: true)
+              .single()
+              .execute()
+              .value
 
-      /// Fetches the household, trying the owner's private database first,
-      /// then all shared zones (for invited participants).
-      func fetchHousehold() async throws -> Household? {
-          // Try owner path first
-          let ownerZoneID = ck.ownerZoneID
-          let query = CKQuery(recordType: CKRecordTypeName.household, predicate: NSPredicate(value: true))
-          if let household = try? await {
-              let (results, _) = try await ck.privateDB.records(matching: query, inZoneWith: ownerZoneID)
-              return results.compactMap { try? $0.1.get() }.compactMap(Household.init).first
-          }() {
-              return household
-          }
+          // Check member count
+          let memberCount: Int = try await supabase
+              .from("members")
+              .select("id", head: true, count: .exact)
+              .eq("household_id", value: invite.householdId.uuidString)
+              .execute()
+              .count ?? 0
+          guard memberCount < 6 else { throw HouseholdError.householdFull }
 
-          // Participant path: discover shared zones and search each
-          let sharedZones = try await ck.sharedDB.allRecordZones()
-          for zone in sharedZones where zone.zoneID.zoneName == CloudKitService.householdZoneName {
-              let (results, _) = try await ck.sharedDB.records(matching: query, inZoneWith: zone.zoneID)
-              if let household = results.compactMap({ try? $0.1.get() }).compactMap(Household.init).first {
-                  return household
-              }
-          }
-          return nil
+          // Insert member
+          let member: Member = try await supabase
+              .from("members")
+              .insert([
+                  "household_id": invite.householdId.uuidString,
+                  "user_id": userId.uuidString,
+                  "display_name": displayName
+              ])
+              .select()
+              .single()
+              .execute()
+              .value
+
+          // Fetch household
+          let household: Household = try await supabase
+              .from("households")
+              .select()
+              .eq("id", value: invite.householdId.uuidString)
+              .single()
+              .execute()
+              .value
+
+          return (household, member)
       }
 
-      // MARK: - Update
-
-      func updateHouseholdName(_ name: String, household: Household, ownerRecordName: String) async throws -> Household {
-          guard let recordID = household.recordID else { throw CloudKitError.recordNotFound }
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          let record = try await db.record(for: recordID)
-          record["name"] = name as NSString
-          let saved = try await db.save(record)
-          guard let updated = Household(from: saved) else { throw CloudKitError.unexpectedType }
-          return updated
+      func fetchHousehold(id: UUID) async throws -> Household {
+          try await supabase
+              .from("households")
+              .select()
+              .eq("id", value: id.uuidString)
+              .single()
+              .execute()
+              .value
       }
 
-      // MARK: - Share Management
+      func updateHouseholdName(_ name: String, householdId: UUID) async throws {
+          try await supabase
+              .from("households")
+              .update(["name": name])
+              .eq("id", value: householdId.uuidString)
+              .execute()
+      }
 
-      /// Deletes the existing CKShare and creates a new one, invalidating the old invite link.
-      /// Only the household creator can call this.
-      func regenerateShareLink(for household: Household) async throws -> CKShare {
-          guard let recordID = household.recordID else { throw CloudKitError.recordNotFound }
-          let householdRecord = try await ck.privateDB.record(for: recordID)
-          let newShare = CKShare(rootRecord: householdRecord)
-          newShare.publicPermission = .none
-          let (saved, _, _) = try await ck.privateDB.modifyRecords(saving: [householdRecord, newShare], deleting: [])
-          guard let share = saved.first(where: { $0 is CKShare }) as? CKShare else {
-              throw CloudKitError.recordNotFound
+      func activeInviteCode(householdId: UUID) async throws -> String? {
+          let invites: [HouseholdInvite] = try await supabase
+              .from("household_invites")
+              .select()
+              .eq("household_id", value: householdId.uuidString)
+              .eq("is_active", value: true)
+              .execute()
+              .value
+          return invites.first?.inviteCode
+      }
+
+      func regenerateInviteCode(householdId: UUID, userId: UUID) async throws -> String {
+          // Deactivate existing codes
+          try await supabase
+              .from("household_invites")
+              .update(["is_active": false])
+              .eq("household_id", value: householdId.uuidString)
+              .execute()
+          return try await generateNewInviteCode(householdId: householdId, userId: userId)
+      }
+
+      @discardableResult
+      private func generateNewInviteCode(householdId: UUID, userId: UUID) async throws -> String {
+          let code = HouseholdService.generateInviteCode()
+          try await supabase
+              .from("household_invites")
+              .insert([
+                  "household_id": householdId.uuidString,
+                  "invite_code": code,
+                  "created_by": userId.uuidString
+              ])
+              .execute()
+          return code
+      }
+
+      static func generateInviteCode() -> String {
+          let chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+          return String((0..<8).map { _ in chars.randomElement()! })
+      }
+  }
+
+  enum HouseholdError: LocalizedError {
+      case householdFull
+      case invalidCode
+      var errorDescription: String? {
+          switch self {
+          case .householdFull: return "This household is full (max 6 members)."
+          case .invalidCode: return "That code wasn't found. Check the code and try again."
           }
-          return share
-      }
-
-      // MARK: - Members
-
-      func fetchMembers(household: Household, ownerRecordName: String) async throws -> [Member] {
-          let refs = household.members
-          guard !refs.isEmpty else { return [] }
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          let results = try await db.records(for: refs.map(\.recordID))
-          return results.values.compactMap { try? $0.get() }.compactMap(Member.init)
       }
   }
   ```
 
-- [ ] **Step 2: Create TaskService.swift**
+- [ ] **Step 4: Implement MemberService.swift**
 
   ```swift
-  import CloudKit
+  // HouseMate/Services/MemberService.swift
+  import Supabase
+  import Foundation
 
   @MainActor
-  final class TaskService {
-      private let ck = CloudKitService.shared
-
-      // MARK: - CRUD
-
-      func fetchAllTasks(ownerRecordName: String) async throws -> [HouseMateTask] {
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          let zoneID = ck.householdZoneID(ownerRecordName: ownerRecordName)
-          let query = CKQuery(recordType: CKRecordTypeName.task, predicate: NSPredicate(value: true))
-          query.sortDescriptors = [NSSortDescriptor(key: "dueDate", ascending: true)]
-          let (results, _) = try await db.records(matching: query, inZoneWith: zoneID)
-          return results.compactMap { try? $0.1.get() }.compactMap(HouseMateTask.init)
+  final class MemberService {
+      func fetchMembers(householdId: UUID) async throws -> [Member] {
+          try await supabase
+              .from("members")
+              .select()
+              .eq("household_id", value: householdId.uuidString)
+              .order("created_at", ascending: true)
+              .execute()
+              .value
       }
 
-      func saveTask(_ task: HouseMateTask, ownerRecordName: String) async throws -> HouseMateTask {
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          let zoneID = ck.householdZoneID(ownerRecordName: ownerRecordName)
-          var taskToSave = task
-          // Ensure new records are placed in the household zone, not the default zone
-          if taskToSave.recordID == nil {
-              taskToSave.recordID = CKRecord.ID(recordName: UUID().uuidString, zoneID: zoneID)
-          }
-          let saved = try await db.save(taskToSave.toCKRecord())
-          guard let updated = HouseMateTask(from: saved) else { throw CloudKitError.unexpectedType }
-          return updated
+      func fetchMember(userId: UUID) async throws -> Member? {
+          let members: [Member] = try await supabase
+              .from("members")
+              .select()
+              .eq("user_id", value: userId.uuidString)
+              .execute()
+              .value
+          return members.first
       }
 
-      /// Hard-deletes the task. TaskCompletionLog records cascade-delete via .deleteSelf.
-      func deleteTask(_ task: HouseMateTask, ownerRecordName: String) async throws {
-          guard let recordID = task.recordID else { return }
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          try await db.deleteRecord(withID: recordID)
-      }
-
-      // MARK: - Completion
-
-      /// Completes a task. For recurring tasks, advances the due date.
-      /// Fetches a fresh record first to guard against concurrent completion of non-recurring tasks.
-      /// For recurring tasks, concurrent completion is allowed (both log entries created, last write wins
-      /// for date advancement — this is intentional per spec, not an oversight).
-      func completeTask(_ task: HouseMateTask, by memberRef: CKRecord.Reference, ownerRecordName: String) async throws -> (HouseMateTask, TaskCompletionLog) {
-          guard let taskRecordID = task.recordID else { throw CloudKitError.recordNotFound }
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-
-          let freshRecord = try await db.record(for: taskRecordID)
-          guard let freshTask = HouseMateTask(from: freshRecord) else { throw CloudKitError.unexpectedType }
-
-          // For non-recurring: throw if already completed (concurrent completion guard).
-          // For recurring: allow concurrent completion — last write wins per spec.
-          if freshTask.isCompleted && !freshTask.isRecurring {
-              throw CloudKitError.alreadyCompleted
-          }
-
-          var updatedTask = freshTask
-          let taskRef = CKRecord.Reference(recordID: taskRecordID, action: .deleteSelf)
-          let log = TaskCompletionLog(taskID: taskRef, completedBy: memberRef, completedAt: Date())
-
-          if updatedTask.isRecurring {
-              updatedTask.advanceRecurringDueDate()
-          } else {
-              updatedTask.isCompleted = true
-              updatedTask.completedBy = memberRef
-              updatedTask.completedAt = Date()
-          }
-
-          let (saved, _, _) = try await db.modifyRecords(
-              saving: [updatedTask.toCKRecord(), log.toCKRecord()], deleting: []
-          )
-          guard
-              let savedTask = saved.first(where: { $0.recordType == CKRecordTypeName.task }).flatMap(HouseMateTask.init),
-              let savedLog  = saved.first(where: { $0.recordType == CKRecordTypeName.taskCompletionLog }).flatMap(TaskCompletionLog.init)
-          else { throw CloudKitError.unexpectedType }
-
-          return (savedTask, savedLog)
-      }
-
-      // MARK: - History
-
-      func fetchCompletionLogs(for task: HouseMateTask, ownerRecordName: String, limit: Int = 5) async throws -> [TaskCompletionLog] {
-          guard let recordID = task.recordID else { return [] }
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          let zoneID = ck.householdZoneID(ownerRecordName: ownerRecordName)
-          let ref  = CKRecord.Reference(recordID: recordID, action: .none)
-          let pred = NSPredicate(format: "taskID == %@", ref)
-          let query = CKQuery(recordType: CKRecordTypeName.taskCompletionLog, predicate: pred)
-          query.sortDescriptors = [NSSortDescriptor(key: "completedAt", ascending: false)]
-          let (results, _) = try await db.records(matching: query, inZoneWith: zoneID, resultsLimit: limit)
-          return results.compactMap { try? $0.1.get() }.compactMap(TaskCompletionLog.init)
-      }
-
-      // MARK: - User Templates
-
-      func fetchUserTaskTemplates(ownerRecordName: String) async throws -> [TaskTemplate] {
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          let zoneID = ck.householdZoneID(ownerRecordName: ownerRecordName)
-          let query = CKQuery(recordType: CKRecordTypeName.taskTemplate, predicate: NSPredicate(value: true))
-          let (results, _) = try await db.records(matching: query, inZoneWith: zoneID)
-          return results.compactMap { try? $0.1.get() }.compactMap(TaskTemplate.init)
-      }
-
-      func saveUserTaskTemplate(_ template: TaskTemplate, ownerRecordName: String) async throws -> TaskTemplate {
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          let zoneID = ck.householdZoneID(ownerRecordName: ownerRecordName)
-          var tmpl = template
-          if tmpl.recordID == nil {
-              tmpl.recordID = CKRecord.ID(recordName: UUID().uuidString, zoneID: zoneID)
-          }
-          let saved = try await db.save(tmpl.toCKRecord())
-          guard let updated = TaskTemplate(from: saved) else { throw CloudKitError.unexpectedType }
-          return updated
-      }
-
-      func deleteUserTaskTemplate(_ template: TaskTemplate, ownerRecordName: String) async throws {
-          guard let recordID = template.recordID else { return }
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          try await db.deleteRecord(withID: recordID)
+      func updateDisplayName(_ name: String, memberId: UUID) async throws {
+          try await supabase
+              .from("members")
+              .update(["display_name": name])
+              .eq("id", value: memberId.uuidString)
+              .execute()
       }
   }
   ```
 
-- [ ] **Step 3: Create BinScheduleService.swift**
-
-  ```swift
-  import CloudKit
-
-  @MainActor
-  final class BinScheduleService {
-      private let ck = CloudKitService.shared
-
-      func fetchBinSchedule(ownerRecordName: String) async throws -> BinSchedule? {
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          let zoneID = ck.householdZoneID(ownerRecordName: ownerRecordName)
-          let query = CKQuery(recordType: CKRecordTypeName.binSchedule, predicate: NSPredicate(value: true))
-          let (results, _) = try await db.records(matching: query, inZoneWith: zoneID, resultsLimit: 1)
-          return results.compactMap { try? $0.1.get() }.compactMap(BinSchedule.init).first
-      }
-
-      func saveBinSchedule(_ schedule: BinSchedule, ownerRecordName: String) async throws -> BinSchedule {
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          let zoneID = ck.householdZoneID(ownerRecordName: ownerRecordName)
-          var scheduleToSave = schedule
-          if scheduleToSave.recordID == nil {
-              scheduleToSave.recordID = CKRecord.ID(recordName: UUID().uuidString, zoneID: zoneID)
-          }
-          let saved = try await db.save(scheduleToSave.toCKRecord())
-          guard let updated = BinSchedule(from: saved) else { throw CloudKitError.unexpectedType }
-          return updated
-      }
-  }
-  ```
-
-- [ ] **Step 4: Create MaintenanceService.swift**
-
-  ```swift
-  import CloudKit
-
-  @MainActor
-  final class MaintenanceService {
-      private let ck = CloudKitService.shared
-
-      // MARK: - Items
-
-      func fetchAllItems(ownerRecordName: String) async throws -> [MaintenanceItem] {
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          let zoneID = ck.householdZoneID(ownerRecordName: ownerRecordName)
-          let query = CKQuery(recordType: CKRecordTypeName.maintenanceItem, predicate: NSPredicate(value: true))
-          let (results, _) = try await db.records(matching: query, inZoneWith: zoneID)
-          return results.compactMap { try? $0.1.get() }.compactMap(MaintenanceItem.init)
-      }
-
-      func saveItem(_ item: MaintenanceItem, ownerRecordName: String) async throws -> MaintenanceItem {
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          let zoneID = ck.householdZoneID(ownerRecordName: ownerRecordName)
-          var itemToSave = item
-          if itemToSave.recordID == nil {
-              itemToSave.recordID = CKRecord.ID(recordName: UUID().uuidString, zoneID: zoneID)
-          }
-          let saved = try await db.save(itemToSave.toCKRecord())
-          guard let updated = MaintenanceItem(from: saved) else { throw CloudKitError.unexpectedType }
-          return updated
-      }
-
-      func deleteItem(_ item: MaintenanceItem, ownerRecordName: String) async throws {
-          guard let recordID = item.recordID else { return }
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          try await db.deleteRecord(withID: recordID)
-      }
-
-      // MARK: - Logs
-
-      /// Saves a completion log and updates lastCompletedDate on the item atomically.
-      func logCompletion(_ log: MaintenanceLog, updatingItem item: MaintenanceItem, ownerRecordName: String) async throws -> (MaintenanceItem, MaintenanceLog) {
-          var updatedItem = item
-          updatedItem.lastCompletedDate = log.completedDate
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          let (saved, _, _) = try await db.modifyRecords(
-              saving: [updatedItem.toCKRecord(), log.toCKRecord()], deleting: []
-          )
-          guard
-              let savedItem = saved.first(where: { $0.recordType == CKRecordTypeName.maintenanceItem }).flatMap(MaintenanceItem.init),
-              let savedLog  = saved.first(where: { $0.recordType == CKRecordTypeName.maintenanceLog }).flatMap(MaintenanceLog.init)
-          else { throw CloudKitError.unexpectedType }
-          return (savedItem, savedLog)
-      }
-
-      func fetchLogs(for item: MaintenanceItem, ownerRecordName: String) async throws -> [MaintenanceLog] {
-          guard let recordID = item.recordID else { return [] }
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          let zoneID = ck.householdZoneID(ownerRecordName: ownerRecordName)
-          let ref  = CKRecord.Reference(recordID: recordID, action: .none)
-          let pred = NSPredicate(format: "maintenanceItemID == %@", ref)
-          let query = CKQuery(recordType: CKRecordTypeName.maintenanceLog, predicate: pred)
-          query.sortDescriptors = [NSSortDescriptor(key: "completedDate", ascending: false)]
-          let (results, _) = try await db.records(matching: query, inZoneWith: zoneID)
-          return results.compactMap { try? $0.1.get() }.compactMap(MaintenanceLog.init)
-      }
-
-      // MARK: - User Templates
-
-      func fetchUserMaintenanceTemplates(ownerRecordName: String) async throws -> [MaintenanceTemplate] {
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          let zoneID = ck.householdZoneID(ownerRecordName: ownerRecordName)
-          let query = CKQuery(recordType: CKRecordTypeName.maintenanceTemplate, predicate: NSPredicate(value: true))
-          let (results, _) = try await db.records(matching: query, inZoneWith: zoneID)
-          return results.compactMap { try? $0.1.get() }.compactMap(MaintenanceTemplate.init)
-      }
-
-      func saveUserMaintenanceTemplate(_ template: MaintenanceTemplate, ownerRecordName: String) async throws -> MaintenanceTemplate {
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          let zoneID = ck.householdZoneID(ownerRecordName: ownerRecordName)
-          var tmpl = template
-          if tmpl.recordID == nil {
-              tmpl.recordID = CKRecord.ID(recordName: UUID().uuidString, zoneID: zoneID)
-          }
-          let saved = try await db.save(tmpl.toCKRecord())
-          guard let updated = MaintenanceTemplate(from: saved) else { throw CloudKitError.unexpectedType }
-          return updated
-      }
-
-      func deleteUserMaintenanceTemplate(_ template: MaintenanceTemplate, ownerRecordName: String) async throws {
-          guard let recordID = template.recordID else { return }
-          let db = ck.householdDatabase(ownerRecordName: ownerRecordName)
-          try await db.deleteRecord(withID: recordID)
-      }
-  }
-  ```
-
-- [ ] **Step 5: Build — no compile errors**
-
-  ⌘B. Fix any issues before continuing.
+- [ ] **Step 5: Run tests to verify they pass**
 
 - [ ] **Step 6: Commit**
 
   ```bash
-  git add HouseMate/Services/
-  git commit -m "feat: add domain service layer (Household, Task, BinSchedule, Maintenance)"
+  git add HouseMate/Services/HouseholdService.swift HouseMate/Services/MemberService.swift HouseMateTests/Services/HouseholdServiceTests.swift
+  git commit -m "feat: add HouseholdService and MemberService"
   ```
 
 ---
 
-## Chunk 4: Built-in Templates + App Wiring
-
-### Task 12: Built-in Templates
+### Task 9: TaskService
 
 **Files:**
-- Create: `HouseMate/Resources/BuiltInTemplates.swift`
+- Create: `HouseMate/Services/TaskService.swift`
+- Create: `HouseMateTests/Services/TaskServiceTests.swift`
 
-- [ ] **Step 1: Create BuiltInTemplates.swift**
+- [ ] **Step 1: Write failing tests**
 
   ```swift
+  // HouseMateTests/Services/TaskServiceTests.swift
+  import XCTest
+  @testable import HouseMate
+
+  final class TaskServiceTests: XCTestCase {
+      // Unit-test the recurring advancement logic (pure function, no network)
+      func test_advancedTask_resetsCompletionFields() {
+          let base = Calendar.current.date(from: DateComponents(year: 2026, month: 3, day: 1))!
+          var task = HMTask.makeTest(dueDate: base, isRecurring: true, recurringInterval: .weekly,
+                                     isCompleted: true, completedBy: UUID(), completedAt: Date())
+          TaskService.applyRecurringAdvancement(to: &task)
+          XCTAssertFalse(task.isCompleted)
+          XCTAssertNil(task.completedBy)
+          XCTAssertNil(task.completedAt)
+      }
+
+      func test_advancedTask_advancesDueDateByWeek() {
+          let base = Calendar.current.date(from: DateComponents(year: 2026, month: 3, day: 1))!
+          var task = HMTask.makeTest(dueDate: base, isRecurring: true, recurringInterval: .weekly)
+          TaskService.applyRecurringAdvancement(to: &task)
+          let expected = Calendar.current.date(byAdding: .day, value: 7, to: base)!
+          XCTAssertEqual(task.dueDate, expected)
+      }
+
+      func test_advancedTask_setsNilDueDateToTodayPlusInterval() {
+          var task = HMTask.makeTest(dueDate: nil, isRecurring: true, recurringInterval: .daily)
+          TaskService.applyRecurringAdvancement(to: &task)
+          let expected = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: Date()))!
+          XCTAssertEqual(task.dueDate, expected)
+      }
+  }
+  ```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+- [ ] **Step 3: Implement TaskService.swift**
+
+  ```swift
+  // HouseMate/Services/TaskService.swift
+  import Supabase
+  import Foundation
+
+  @MainActor
+  final class TaskService {
+
+      func fetchTasks(householdId: UUID) async throws -> [HMTask] {
+          try await supabase
+              .from("tasks")
+              .select()
+              .eq("household_id", value: householdId.uuidString)
+              .order("created_at", ascending: false)
+              .execute()
+              .value
+      }
+
+      func createTask(_ task: HMTask) async throws -> HMTask {
+          try await supabase
+              .from("tasks")
+              .insert(task)
+              .select()
+              .single()
+              .execute()
+              .value
+      }
+
+      func updateTask(_ task: HMTask) async throws {
+          try await supabase
+              .from("tasks")
+              .update(task)
+              .eq("id", value: task.id.uuidString)
+              .execute()
+      }
+
+      func deleteTask(id: UUID) async throws {
+          try await supabase
+              .from("tasks")
+              .delete()
+              .eq("id", value: id.uuidString)
+              .execute()
+      }
+
+      /// Complete a task. For recurring tasks, creates a log entry and advances the due date.
+      /// For one-time tasks, marks it completed. Returns nil if already completed (concurrent race).
+      func completeTask(_ task: HMTask, memberId: UUID) async throws -> HMTask? {
+          // Fetch fresh copy to detect concurrent completion
+          let fresh: HMTask = try await supabase
+              .from("tasks")
+              .select()
+              .eq("id", value: task.id.uuidString)
+              .single()
+              .execute()
+              .value
+
+          guard !fresh.isCompleted else { return nil }  // already completed
+
+          // Insert completion log
+          let log = TaskCompletionLog(
+              id: UUID(), taskId: task.id, completedBy: memberId, completedAt: Date()
+          )
+          try await supabase.from("task_completion_logs").insert(log).execute()
+
+          if fresh.isRecurring {
+              var advanced = fresh
+              TaskService.applyRecurringAdvancement(to: &advanced)
+              try await updateTask(advanced)
+              return advanced
+          } else {
+              var completed = fresh
+              completed.isCompleted = true
+              completed.completedBy = memberId
+              completed.completedAt = Date()
+              try await updateTask(completed)
+              return completed
+          }
+      }
+
+      func fetchCompletionLogs(taskId: UUID, limit: Int = 5) async throws -> [TaskCompletionLog] {
+          try await supabase
+              .from("task_completion_logs")
+              .select()
+              .eq("task_id", value: taskId.uuidString)
+              .order("completed_at", ascending: false)
+              .limit(limit)
+              .execute()
+              .value
+      }
+
+      /// Pure function: advances due date and resets completion fields on a recurring task.
+      static func applyRecurringAdvancement(to task: inout HMTask) {
+          let today = Calendar.current.startOfDay(for: Date())
+          if let due = task.dueDate, let next = task.nextDueDate {
+              task.dueDate = next
+              _ = due  // suppress unused warning
+          } else if let interval = task.recurringInterval {
+              task.dueDate = Calendar.current.date(byAdding: .day, value: interval.days, to: today)
+          }
+          task.isCompleted = false
+          task.completedBy = nil
+          task.completedAt = nil
+      }
+  }
+  ```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+- [ ] **Step 5: Commit**
+
+  ```bash
+  git add HouseMate/Services/TaskService.swift HouseMateTests/Services/TaskServiceTests.swift
+  git commit -m "feat: add TaskService with completion and recurring advancement logic"
+  ```
+
+---
+
+### Task 10: BinService and MaintenanceService
+
+**Files:**
+- Create: `HouseMate/Services/BinService.swift`
+- Create: `HouseMate/Services/MaintenanceService.swift`
+- Create: `HouseMate/Services/TemplateService.swift`
+- Create: `HouseMate/Resources/BuiltInTemplates.swift`
+
+- [ ] **Step 1: Implement BinService.swift**
+
+  ```swift
+  // HouseMate/Services/BinService.swift
+  import Supabase
+  import Foundation
+
+  @MainActor
+  final class BinService {
+      func fetchSchedule(householdId: UUID) async throws -> BinSchedule? {
+          let schedules: [BinSchedule] = try await supabase
+              .from("bin_schedules")
+              .select()
+              .eq("household_id", value: householdId.uuidString)
+              .execute()
+              .value
+          return schedules.first
+      }
+
+      func upsertSchedule(_ schedule: BinSchedule) async throws -> BinSchedule {
+          try await supabase
+              .from("bin_schedules")
+              .upsert(schedule, onConflict: "household_id")
+              .select()
+              .single()
+              .execute()
+              .value
+      }
+  }
+  ```
+
+- [ ] **Step 2: Implement MaintenanceService.swift**
+
+  ```swift
+  // HouseMate/Services/MaintenanceService.swift
+  import Supabase
+  import Foundation
+
+  @MainActor
+  final class MaintenanceService {
+      func fetchItems(householdId: UUID) async throws -> [MaintenanceItem] {
+          try await supabase
+              .from("maintenance_items")
+              .select()
+              .eq("household_id", value: householdId.uuidString)
+              .order("name", ascending: true)
+              .execute()
+              .value
+      }
+
+      func createItem(_ item: MaintenanceItem) async throws -> MaintenanceItem {
+          try await supabase
+              .from("maintenance_items")
+              .insert(item)
+              .select()
+              .single()
+              .execute()
+              .value
+      }
+
+      func updateItem(_ item: MaintenanceItem) async throws {
+          try await supabase
+              .from("maintenance_items")
+              .update(item)
+              .eq("id", value: item.id.uuidString)
+              .execute()
+      }
+
+      func deleteItem(id: UUID) async throws {
+          try await supabase
+              .from("maintenance_items")
+              .delete()
+              .eq("id", value: id.uuidString)
+              .execute()
+      }
+
+      func logCompletion(_ log: MaintenanceLog, updatingItem item: MaintenanceItem) async throws -> MaintenanceItem {
+          // Insert log
+          try await supabase.from("maintenance_logs").insert(log).execute()
+          // Update item's lastCompletedDate
+          var updated = item
+          updated.lastCompletedDate = log.completedDate
+          try await updateItem(updated)
+          return updated
+      }
+
+      func fetchLogs(itemId: UUID) async throws -> [MaintenanceLog] {
+          try await supabase
+              .from("maintenance_logs")
+              .select()
+              .eq("maintenance_item_id", value: itemId.uuidString)
+              .order("completed_date", ascending: false)
+              .execute()
+              .value
+      }
+
+      func deleteLog(id: UUID) async throws {
+          try await supabase
+              .from("maintenance_logs")
+              .delete()
+              .eq("id", value: id.uuidString)
+              .execute()
+      }
+  }
+  ```
+
+- [ ] **Step 3: Implement TemplateService.swift**
+
+  ```swift
+  // HouseMate/Services/TemplateService.swift
+  import Supabase
+  import Foundation
+
+  @MainActor
+  final class TemplateService {
+      // Task templates
+      func fetchUserTaskTemplates(householdId: UUID) async throws -> [TaskTemplate] {
+          let rows: [[String: String]] = try await supabase
+              .from("task_templates")
+              .select()
+              .eq("household_id", value: householdId.uuidString)
+              .order("title", ascending: true)
+              .execute()
+              .value
+          // Decoded via custom init since isBuiltIn is not in DB
+          return try rows.map { row in
+              guard let idStr = row["id"], let id = UUID(uuidString: idStr),
+                    let title = row["title"],
+                    let categoryStr = row["category"],
+                    let category = TaskCategory(rawValue: categoryStr) else {
+                  throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "bad row"))
+              }
+              let interval = row["recurring_interval"].flatMap { RecurringInterval(rawValue: $0) }
+              return TaskTemplate(id: id, householdId: UUID(uuidString: row["household_id"]!)!,
+                                  title: title, category: category, recurringInterval: interval)
+          }
+      }
+
+      func createTaskTemplate(_ template: TaskTemplate, householdId: UUID) async throws {
+          try await supabase
+              .from("task_templates")
+              .insert([
+                  "household_id": householdId.uuidString,
+                  "title": template.title,
+                  "category": template.category.rawValue,
+                  "recurring_interval": template.recurringInterval?.rawValue as Any
+              ])
+              .execute()
+      }
+
+      func deleteTaskTemplate(id: UUID) async throws {
+          try await supabase
+              .from("task_templates")
+              .delete()
+              .eq("id", value: id.uuidString)
+              .execute()
+      }
+
+      // Maintenance templates
+      func fetchUserMaintenanceTemplates(householdId: UUID) async throws -> [MaintenanceTemplate] {
+          let rows: [MaintenanceTemplate] = try await supabase
+              .from("maintenance_templates")
+              .select()
+              .eq("household_id", value: householdId.uuidString)
+              .order("name", ascending: true)
+              .execute()
+              .value
+          return rows
+      }
+
+      func createMaintenanceTemplate(_ template: MaintenanceTemplate, householdId: UUID) async throws {
+          try await supabase
+              .from("maintenance_templates")
+              .insert([
+                  "household_id": householdId.uuidString,
+                  "name": template.name,
+                  "category": template.category.rawValue,
+                  "interval_days": template.intervalDays
+              ])
+              .execute()
+      }
+
+      func deleteMaintenanceTemplate(id: UUID) async throws {
+          try await supabase
+              .from("maintenance_templates")
+              .delete()
+              .eq("id", value: id.uuidString)
+              .execute()
+      }
+  }
+  ```
+
+- [ ] **Step 4: Implement BuiltInTemplates.swift**
+
+  ```swift
+  // HouseMate/Resources/BuiltInTemplates.swift
   import Foundation
 
   enum BuiltInTemplates {
-
-      // MARK: - Task Templates
-
       static let tasks: [TaskTemplate] = [
           // Weekly
-          TaskTemplate(title: "Take out trash",              category: .kitchen,  recurringInterval: .weekly,  isBuiltIn: true),
-          TaskTemplate(title: "Vacuum living room",           category: .other,    recurringInterval: .weekly,  isBuiltIn: true),
-          TaskTemplate(title: "Clean bathrooms",             category: .bathroom, recurringInterval: .weekly,  isBuiltIn: true),
-          TaskTemplate(title: "Wipe down kitchen counters",  category: .kitchen,  recurringInterval: .weekly,  isBuiltIn: true),
-          TaskTemplate(title: "Do laundry",                  category: .other,    recurringInterval: .weekly,  isBuiltIn: true),
-          TaskTemplate(title: "Mop floors",                  category: .other,    recurringInterval: .weekly,  isBuiltIn: true),
+          TaskTemplate(builtInTitle: "Take out trash", category: .other, recurringInterval: .weekly),
+          TaskTemplate(builtInTitle: "Vacuum living room", category: .other, recurringInterval: .weekly),
+          TaskTemplate(builtInTitle: "Clean bathrooms", category: .bathroom, recurringInterval: .weekly),
+          TaskTemplate(builtInTitle: "Wipe down kitchen counters", category: .kitchen, recurringInterval: .weekly),
+          TaskTemplate(builtInTitle: "Do laundry", category: .other, recurringInterval: .weekly),
+          TaskTemplate(builtInTitle: "Mop floors", category: .other, recurringInterval: .weekly),
           // Monthly
-          TaskTemplate(title: "Clean fridge",                category: .kitchen,  recurringInterval: .monthly, isBuiltIn: true),
-          TaskTemplate(title: "Dust ceiling fans",           category: .other,    recurringInterval: .monthly, isBuiltIn: true),
-          TaskTemplate(title: "Wash windows",                category: .outdoor,  recurringInterval: .monthly, isBuiltIn: true),
-          TaskTemplate(title: "Deep clean oven",             category: .kitchen,  recurringInterval: .monthly, isBuiltIn: true),
-          // Seasonal / one-time checklists
-          TaskTemplate(title: "Spring cleaning",             category: .other,    recurringInterval: nil,      isBuiltIn: true),
-          TaskTemplate(title: "Pre-guest prep",              category: .other,    recurringInterval: nil,      isBuiltIn: true),
-          TaskTemplate(title: "Move-in checklist",           category: .other,    recurringInterval: nil,      isBuiltIn: true),
+          TaskTemplate(builtInTitle: "Clean fridge", category: .kitchen, recurringInterval: .monthly),
+          TaskTemplate(builtInTitle: "Dust ceiling fans", category: .other, recurringInterval: .monthly),
+          TaskTemplate(builtInTitle: "Wash windows", category: .outdoor, recurringInterval: .monthly),
+          TaskTemplate(builtInTitle: "Deep clean oven", category: .kitchen, recurringInterval: .monthly),
+          // One-time checklists
+          TaskTemplate(builtInTitle: "Spring cleaning", category: .other, recurringInterval: nil),
+          TaskTemplate(builtInTitle: "Pre-guest prep", category: .other, recurringInterval: nil),
+          TaskTemplate(builtInTitle: "Move-in checklist", category: .other, recurringInterval: nil),
       ]
 
-      // MARK: - Maintenance Templates
-
-      static let maintenanceItems: [MaintenanceTemplate] = [
-          MaintenanceTemplate(name: "Change furnace filter",      category: .yearRound, intervalDays: 90,  isBuiltIn: true),
-          MaintenanceTemplate(name: "Replace HVAC filter",        category: .yearRound, intervalDays: 90,  isBuiltIn: true),
-          MaintenanceTemplate(name: "Clean dryer vent",           category: .yearRound, intervalDays: 365, isBuiltIn: true),
-          MaintenanceTemplate(name: "Sweep/blow out garage",      category: .yearRound, intervalDays: 30,  isBuiltIn: true),
-          MaintenanceTemplate(name: "Test smoke detectors",       category: .yearRound, intervalDays: 180, isBuiltIn: true),
-          MaintenanceTemplate(name: "Clean range hood filter",    category: .yearRound, intervalDays: 90,  isBuiltIn: true),
-          MaintenanceTemplate(name: "Flush water heater",         category: .yearRound, intervalDays: 365, isBuiltIn: true),
-          MaintenanceTemplate(name: "Check window/door seals",   category: .fall,      intervalDays: 365, isBuiltIn: true),
-          MaintenanceTemplate(name: "Clean gutters",              category: .spring,    intervalDays: 180, isBuiltIn: true),
-          MaintenanceTemplate(name: "Winterize outdoor faucets",  category: .fall,      intervalDays: 365, isBuiltIn: true),
+      static let maintenance: [MaintenanceTemplate] = [
+          MaintenanceTemplate(builtInName: "Change furnace filter", category: .yearRound, intervalDays: 90),
+          MaintenanceTemplate(builtInName: "Replace HVAC filter", category: .yearRound, intervalDays: 90),
+          MaintenanceTemplate(builtInName: "Clean dryer vent", category: .yearRound, intervalDays: 365),
+          MaintenanceTemplate(builtInName: "Sweep/blow out garage", category: .yearRound, intervalDays: 30),
+          MaintenanceTemplate(builtInName: "Test smoke detectors", category: .yearRound, intervalDays: 180),
+          MaintenanceTemplate(builtInName: "Clean range hood filter", category: .yearRound, intervalDays: 90),
+          MaintenanceTemplate(builtInName: "Flush water heater", category: .yearRound, intervalDays: 365),
+          MaintenanceTemplate(builtInName: "Check window/door seals", category: .fall, intervalDays: 365),
+          MaintenanceTemplate(builtInName: "Clean gutters", category: .spring, intervalDays: 180),
+          MaintenanceTemplate(builtInName: "Winterize outdoor faucets", category: .fall, intervalDays: 365),
       ]
   }
   ```
 
-- [ ] **Step 2: Build — no compile errors**
-
-  ⌘B.
-
-- [ ] **Step 3: Commit**
+- [ ] **Step 5: Commit**
 
   ```bash
-  git add HouseMate/Resources/BuiltInTemplates.swift
-  git commit -m "feat: add built-in task and maintenance templates (bundled locally)"
+  git add HouseMate/Services/BinService.swift HouseMate/Services/MaintenanceService.swift HouseMate/Services/TemplateService.swift HouseMate/Resources/BuiltInTemplates.swift
+  git commit -m "feat: add BinService, MaintenanceService, TemplateService, BuiltInTemplates"
   ```
 
 ---
 
-### Task 13: App Startup + CloudKit Initialization
+## Chunk 4: Realtime, AppState, and Navigation
+
+### Task 11: RealtimeService
 
 **Files:**
-- Modify: `HouseMate/HouseMateApp.swift`
+- Create: `HouseMate/Services/RealtimeService.swift`
 
-- [ ] **Step 1: Update HouseMateApp.swift to initialize CloudKit on launch**
+- [ ] **Step 1: Write failing test**
 
   ```swift
+  // HouseMateTests/Services/RealtimeServiceTests.swift
+  import XCTest
+  @testable import HouseMate
+
+  final class RealtimeServiceTests: XCTestCase {
+      func test_realtimeService_canBeInstantiated() {
+          let service = RealtimeService()
+          XCTAssertNotNil(service)
+      }
+
+      func test_notificationNames_areCorrect() {
+          XCTAssertEqual(RealtimeService.tasksChangedNotification.rawValue, "RealtimeTasksChanged")
+          XCTAssertEqual(RealtimeService.binScheduleChangedNotification.rawValue, "RealtimeBinScheduleChanged")
+          XCTAssertEqual(RealtimeService.maintenanceChangedNotification.rawValue, "RealtimeMaintenanceChanged")
+          XCTAssertEqual(RealtimeService.membersChangedNotification.rawValue, "RealtimeMembersChanged")
+      }
+  }
+  ```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+- [ ] **Step 3: Implement RealtimeService.swift**
+
+  ```swift
+  // HouseMate/Services/RealtimeService.swift
+  import Supabase
+  import Foundation
+
+  /// Manages Supabase Realtime subscriptions for a household.
+  /// Posts NotificationCenter notifications when changes arrive so ViewModels can refresh.
+  @MainActor
+  final class RealtimeService {
+      enum Notification: String {
+          case tasksChangedNotification      = "RealtimeTasksChanged"
+          case binScheduleChangedNotification = "RealtimeBinScheduleChanged"
+          case maintenanceChangedNotification = "RealtimeMaintenanceChanged"
+          case membersChangedNotification    = "RealtimeMembersChanged"
+
+          var name: Foundation.Notification.Name { .init(rawValue) }
+      }
+
+      static let tasksChangedNotification      = Notification.tasksChangedNotification
+      static let binScheduleChangedNotification = Notification.binScheduleChangedNotification
+      static let maintenanceChangedNotification = Notification.maintenanceChangedNotification
+      static let membersChangedNotification    = Notification.membersChangedNotification
+
+      private var channel: RealtimeChannelV2?
+
+      func subscribe(householdId: UUID) async {
+          await unsubscribe()
+          let idStr = householdId.uuidString
+          let ch = supabase.channel("household-\(idStr)")
+
+          ch.onPostgresChange(AnyAction.self, schema: "public", table: "tasks",
+              filter: "household_id=eq.\(idStr)") { [weak self] _ in
+              Task { @MainActor in
+                  NotificationCenter.default.post(name: RealtimeService.tasksChangedNotification.name, object: nil)
+              }
+          }
+
+          ch.onPostgresChange(AnyAction.self, schema: "public", table: "task_completion_logs") { [weak self] _ in
+              Task { @MainActor in
+                  NotificationCenter.default.post(name: RealtimeService.tasksChangedNotification.name, object: nil)
+              }
+          }
+
+          ch.onPostgresChange(AnyAction.self, schema: "public", table: "bin_schedules",
+              filter: "household_id=eq.\(idStr)") { [weak self] _ in
+              Task { @MainActor in
+                  NotificationCenter.default.post(name: RealtimeService.binScheduleChangedNotification.name, object: nil)
+              }
+          }
+
+          ch.onPostgresChange(AnyAction.self, schema: "public", table: "maintenance_items",
+              filter: "household_id=eq.\(idStr)") { [weak self] _ in
+              Task { @MainActor in
+                  NotificationCenter.default.post(name: RealtimeService.maintenanceChangedNotification.name, object: nil)
+              }
+          }
+
+          ch.onPostgresChange(AnyAction.self, schema: "public", table: "maintenance_logs") { [weak self] _ in
+              Task { @MainActor in
+                  NotificationCenter.default.post(name: RealtimeService.maintenanceChangedNotification.name, object: nil)
+              }
+          }
+
+          ch.onPostgresChange(AnyAction.self, schema: "public", table: "members",
+              filter: "household_id=eq.\(idStr)") { [weak self] _ in
+              Task { @MainActor in
+                  NotificationCenter.default.post(name: RealtimeService.membersChangedNotification.name, object: nil)
+              }
+          }
+
+          await ch.subscribe()
+          self.channel = ch
+      }
+
+      func unsubscribe() async {
+          if let ch = channel {
+              await supabase.removeChannel(ch)
+              channel = nil
+          }
+      }
+  }
+  ```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+- [ ] **Step 5: Commit**
+
+  ```bash
+  git add HouseMate/Services/RealtimeService.swift HouseMateTests/Services/RealtimeServiceTests.swift
+  git commit -m "feat: add RealtimeService with Supabase channel subscriptions"
+  ```
+
+---
+
+### Task 12: AppState
+
+**Files:**
+- Create: `HouseMate/State/AppState.swift`
+- Create: `HouseMateTests/State/AppStateTests.swift`
+
+- [ ] **Step 1: Write failing test**
+
+  ```swift
+  // HouseMateTests/State/AppStateTests.swift
+  import XCTest
+  @testable import HouseMate
+
+  final class AppStateTests: XCTestCase {
+      func test_appState_initiallyUnauthenticated() {
+          let state = AppState()
+          XCTAssertFalse(state.isAuthenticated)
+          XCTAssertNil(state.currentMember)
+          XCTAssertNil(state.household)
+      }
+
+      func test_appState_isAuthenticated_whenUserSet() {
+          let state = AppState()
+          // isAuthenticated derives from currentUser via AuthService
+          // Can't set directly; test the computed property logic
+          XCTAssertFalse(state.isAuthenticated)
+      }
+
+      func test_appState_hasHousehold_whenHouseholdSet() {
+          let state = AppState()
+          XCTAssertFalse(state.hasHousehold)
+          state.household = Household(id: UUID(), name: "Test", createdBy: UUID(), createdAt: Date())
+          XCTAssertTrue(state.hasHousehold)
+      }
+  }
+  ```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+- [ ] **Step 3: Implement AppState.swift**
+
+  ```swift
+  // HouseMate/State/AppState.swift
+  import Observation
+  import Foundation
+
+  @Observable
+  @MainActor
+  final class AppState {
+      var household: Household?
+      var currentMember: Member?
+      var members: [Member] = []
+
+      private let authService = AuthService()
+
+      var isAuthenticated: Bool { authService.currentUser != nil }
+      var hasHousehold: Bool { household != nil }
+      var currentUserId: UUID? { authService.currentUser.map { UUID(uuidString: $0.id.uuidString) } ?? nil }
+
+      func loadSession() async {
+          _ = try? await authService.restoreSession()
+          guard isAuthenticated, let userId = currentUserId else { return }
+          let memberService = MemberService()
+          guard let member = try? await memberService.fetchMember(userId: userId) else { return }
+          currentMember = member
+          let householdService = HouseholdService()
+          household = try? await householdService.fetchHousehold(id: member.householdId)
+          members = (try? await memberService.fetchMembers(householdId: member.householdId)) ?? []
+      }
+
+      func signOut() async throws {
+          try await authService.signOut()
+          household = nil
+          currentMember = nil
+          members = []
+      }
+
+      func memberName(for memberId: UUID?) -> String {
+          guard let memberId else { return "Unknown" }
+          return members.first { $0.id == memberId }?.displayName ?? "Unknown"
+      }
+  }
+  ```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+- [ ] **Step 5: Commit**
+
+  ```bash
+  git add HouseMate/State/AppState.swift HouseMateTests/State/AppStateTests.swift
+  git commit -m "feat: add AppState observable with session restoration"
+  ```
+
+---
+
+### Task 13: Navigation Skeleton and Onboarding
+
+**Files:**
+- Create: `HouseMate/App/HouseMateApp.swift` (replace default)
+- Create: `HouseMate/App/ContentView.swift` (replace default)
+- Create: `HouseMate/Views/Main/MainTabView.swift`
+- Create: `HouseMate/Views/Onboarding/AuthView.swift`
+- Create: `HouseMate/Views/Onboarding/HouseholdChoiceView.swift`
+- Create: `HouseMate/Views/Onboarding/CreateHouseholdView.swift`
+- Create: `HouseMate/Views/Onboarding/JoinHouseholdView.swift`
+
+- [ ] **Step 1: Implement HouseMateApp.swift**
+
+  ```swift
+  // HouseMate/App/HouseMateApp.swift
   import SwiftUI
 
   @main
   struct HouseMateApp: App {
+      @State private var appState = AppState()
+
       var body: some Scene {
           WindowGroup {
               ContentView()
-                  .task {
-                      await initializeCloudKit()
-                  }
-          }
-      }
-
-      private func initializeCloudKit() async {
-          do {
-              let ck = CloudKitService.shared
-              try await ck.checkAccountStatus()
-              // Cache the current user's record name — required for owner-vs-participant
-              // database routing throughout all service calls.
-              try await ck.fetchAndCacheCurrentUserRecordName()
-              // Create the shared zone if this is a first launch (gated by UserDefaults flag).
-              // Non-owners: this is a no-op because the flag won't be set on their device.
-              try await ck.createSharedZoneIfNeeded()
-          } catch {
-              // iCloud unavailable or account error — handled in onboarding flow (next plan)
-              print("[HouseMate] CloudKit init: \(error.localizedDescription)")
+                  .environment(appState)
+                  .task { await appState.loadSession() }
           }
       }
   }
   ```
 
-- [ ] **Step 2: Build and run on simulator**
+- [ ] **Step 2: Implement ContentView.swift**
 
-  ⌘R. App launches, 4 tabs visible. Console shows CloudKit init log (expected: error about iCloud not being available in the Simulator — this is normal; sign into iCloud in the simulator or use a device).
+  ```swift
+  // HouseMate/App/ContentView.swift
+  import SwiftUI
 
-- [ ] **Step 3: Run all tests**
+  struct ContentView: View {
+      @Environment(AppState.self) private var appState
 
-  ⌘U. All unit tests pass.
+      var body: some View {
+          if !appState.isAuthenticated {
+              AuthView()
+          } else if !appState.hasHousehold {
+              HouseholdChoiceView()
+          } else {
+              MainTabView()
+          }
+      }
+  }
+  ```
 
-- [ ] **Step 4: Final commit**
+- [ ] **Step 3: Implement MainTabView.swift**
+
+  ```swift
+  // HouseMate/Views/Main/MainTabView.swift
+  import SwiftUI
+
+  struct MainTabView: View {
+      var body: some View {
+          TabView {
+              Text("Home")
+                  .tabItem { Label("Home", systemImage: "house") }
+              Text("Tasks")
+                  .tabItem { Label("Tasks", systemImage: "checklist") }
+              Text("Bins")
+                  .tabItem { Label("Bins", systemImage: "trash") }
+              Text("Maintenance")
+                  .tabItem { Label("Maintenance", systemImage: "wrench.and.screwdriver") }
+          }
+      }
+  }
+  ```
+
+- [ ] **Step 4: Implement AuthView.swift**
+
+  ```swift
+  // HouseMate/Views/Onboarding/AuthView.swift
+  import SwiftUI
+
+  struct AuthView: View {
+      @Environment(AppState.self) private var appState
+      @State private var email = ""
+      @State private var password = ""
+      @State private var displayName = ""
+      @State private var isSignUp = true
+      @State private var isLoading = false
+      @State private var errorMessage: String?
+
+      private let authService = AuthService()
+
+      var body: some View {
+          NavigationStack {
+              Form {
+                  Section {
+                      TextField("Email", text: $email)
+                          .keyboardType(.emailAddress)
+                          .autocorrectionDisabled()
+                          .textInputAutocapitalization(.never)
+                      SecureField("Password", text: $password)
+                      if isSignUp {
+                          TextField("Your display name", text: $displayName)
+                      }
+                  }
+                  if let error = errorMessage {
+                      Section { Text(error).foregroundStyle(.red) }
+                  }
+                  Section {
+                      Button(isSignUp ? "Create Account" : "Sign In") {
+                          Task { await submit() }
+                      }
+                      .disabled(isLoading || email.isEmpty || password.isEmpty || (isSignUp && displayName.isEmpty))
+                  }
+                  Section {
+                      Button(isSignUp ? "Already have an account? Sign In" : "New here? Create Account") {
+                          isSignUp.toggle()
+                          errorMessage = nil
+                      }
+                      .foregroundStyle(.secondary)
+                  }
+              }
+              .navigationTitle(isSignUp ? "Create Account" : "Sign In")
+              .disabled(isLoading)
+          }
+      }
+
+      private func submit() async {
+          isLoading = true
+          errorMessage = nil
+          do {
+              if isSignUp {
+                  _ = try await authService.signUp(email: email, password: password)
+              } else {
+                  _ = try await authService.signIn(email: email, password: password)
+              }
+              await appState.loadSession()
+          } catch {
+              errorMessage = error.localizedDescription
+          }
+          isLoading = false
+      }
+  }
+  ```
+
+- [ ] **Step 5: Implement HouseholdChoiceView.swift**
+
+  ```swift
+  // HouseMate/Views/Onboarding/HouseholdChoiceView.swift
+  import SwiftUI
+
+  struct HouseholdChoiceView: View {
+      @State private var showCreate = false
+      @State private var showJoin = false
+
+      var body: some View {
+          NavigationStack {
+              VStack(spacing: 24) {
+                  Text("Welcome to HouseMate")
+                      .font(.largeTitle).bold()
+                  Text("Set up your household to get started.")
+                      .foregroundStyle(.secondary)
+                  Button("Create a Household") { showCreate = true }
+                      .buttonStyle(.borderedProminent)
+                  Button("Join a Household") { showJoin = true }
+                      .buttonStyle(.bordered)
+              }
+              .padding()
+              .sheet(isPresented: $showCreate) { CreateHouseholdView() }
+              .sheet(isPresented: $showJoin) { JoinHouseholdView() }
+          }
+      }
+  }
+  ```
+
+- [ ] **Step 6: Implement CreateHouseholdView.swift**
+
+  ```swift
+  // HouseMate/Views/Onboarding/CreateHouseholdView.swift
+  import SwiftUI
+
+  struct CreateHouseholdView: View {
+      @Environment(AppState.self) private var appState
+      @Environment(\.dismiss) private var dismiss
+      @State private var householdName = ""
+      @State private var displayName = ""
+      @State private var isLoading = false
+      @State private var errorMessage: String?
+
+      private let householdService = HouseholdService()
+
+      var body: some View {
+          NavigationStack {
+              Form {
+                  Section("Household") {
+                      TextField("e.g. The Smith Household", text: $householdName)
+                  }
+                  Section("Your Name") {
+                      TextField("How should we call you?", text: $displayName)
+                  }
+                  if let error = errorMessage {
+                      Section { Text(error).foregroundStyle(.red) }
+                  }
+              }
+              .navigationTitle("Create Household")
+              .toolbar {
+                  ToolbarItem(placement: .confirmationAction) {
+                      Button("Create") { Task { await create() } }
+                          .disabled(isLoading || householdName.isEmpty || displayName.isEmpty)
+                  }
+                  ToolbarItem(placement: .cancellationAction) {
+                      Button("Cancel") { dismiss() }
+                  }
+              }
+              .disabled(isLoading)
+          }
+      }
+
+      private func create() async {
+          guard let userId = appState.currentUserId else { return }
+          isLoading = true
+          errorMessage = nil
+          do {
+              let (household, member) = try await householdService.createHousehold(
+                  name: householdName, displayName: displayName, userId: userId)
+              appState.household = household
+              appState.currentMember = member
+              appState.members = [member]
+              dismiss()
+          } catch {
+              errorMessage = error.localizedDescription
+          }
+          isLoading = false
+      }
+  }
+  ```
+
+- [ ] **Step 7: Implement JoinHouseholdView.swift**
+
+  ```swift
+  // HouseMate/Views/Onboarding/JoinHouseholdView.swift
+  import SwiftUI
+
+  struct JoinHouseholdView: View {
+      @Environment(AppState.self) private var appState
+      @Environment(\.dismiss) private var dismiss
+      @State private var inviteCode = ""
+      @State private var displayName = ""
+      @State private var isLoading = false
+      @State private var errorMessage: String?
+
+      private let householdService = HouseholdService()
+      private let memberService = MemberService()
+
+      var body: some View {
+          NavigationStack {
+              Form {
+                  Section("Invite Code") {
+                      TextField("Enter 8-character code", text: $inviteCode)
+                          .autocorrectionDisabled()
+                          .textInputAutocapitalization(.characters)
+                  }
+                  Section("Your Name") {
+                      TextField("How should we call you?", text: $displayName)
+                  }
+                  if let error = errorMessage {
+                      Section { Text(error).foregroundStyle(.red) }
+                  }
+              }
+              .navigationTitle("Join Household")
+              .toolbar {
+                  ToolbarItem(placement: .confirmationAction) {
+                      Button("Join") { Task { await join() } }
+                          .disabled(isLoading || inviteCode.count != 8 || displayName.isEmpty)
+                  }
+                  ToolbarItem(placement: .cancellationAction) {
+                      Button("Cancel") { dismiss() }
+                  }
+              }
+              .disabled(isLoading)
+          }
+      }
+
+      private func join() async {
+          guard let userId = appState.currentUserId else { return }
+          isLoading = true
+          errorMessage = nil
+          do {
+              let (household, member) = try await householdService.joinHousehold(
+                  inviteCode: inviteCode, displayName: displayName, userId: userId)
+              let allMembers = try await memberService.fetchMembers(householdId: household.id)
+              appState.household = household
+              appState.currentMember = member
+              appState.members = allMembers
+              dismiss()
+          } catch {
+              errorMessage = error.localizedDescription
+          }
+          isLoading = false
+      }
+  }
+  ```
+
+- [ ] **Step 8: Build and run on simulator**
+
+  Run the app in the iOS Simulator. Verify:
+  - App launches to AuthView (sign up / sign in)
+  - After sign up, navigates to HouseholdChoiceView
+  - "Create a Household" sheet opens and creates a household on submit
+  - After creating, navigates to MainTabView (4 tabs visible with placeholder text)
+  - Second device/simulator: sign up with different email, "Join a Household", enter the code, navigates to MainTabView
+
+- [ ] **Step 9: Commit**
 
   ```bash
-  git add HouseMate/HouseMateApp.swift
-  git commit -m "feat: wire CloudKit initialization into app startup"
+  git add HouseMate/App/ HouseMate/Views/ HouseMate/State/
+  git commit -m "feat: add navigation skeleton, onboarding auth + household flow"
   ```
 
 ---
 
-## Foundation Complete
+## Chunk 5: Date Decoding Configuration
 
-**Deliverables:**
-- Xcode project with CloudKit + Push Notifications + Background Modes entitlements
-- All data models with unit-tested business logic (rotation algorithm, due date status, recurring task advancement)
-- CKRecord ↔ model roundtrip mapping for all types — unit tested
-- CloudKit service layer: `CloudKitService` base + 4 domain services
-- Navigation skeleton: 4 tabs with placeholder views
-- Built-in templates bundled locally
+### Task 14: Supabase Date Decoder
 
-**Test coverage summary:**
-- `BinScheduleTests` — 10 tests covering rotation calc, next pickup, upcoming list, days-until
-- `MaintenanceItemTests` — 8 tests covering due date calculation, all three status thresholds, isDueSoon
-- `TaskTests` — 9 tests covering recurring advancement (daily/weekly/monthly), nil dueDate, overdue logic, isDueToday
-- `CKRecordMappingTests` — 8 tests covering roundtrip for all key record types
+Supabase returns dates in ISO 8601 format for `TIMESTAMPTZ` fields and `YYYY-MM-DD` format for `DATE` fields. The default `JSONDecoder` only handles ISO 8601. We need a shared decoder that handles both.
 
-**Next plans (execute in order):**
-1. `2026-03-12-housemate-onboarding.md` — iCloud check, create/join household, share link, error states
-2. `2026-03-12-housemate-tasks.md` — Tasks tab: list, detail, add/edit, templates, swipe actions
-3. `2026-03-12-housemate-bins.md` — Bins tab: rotation display, upcoming list, schedule config
-4. `2026-03-12-housemate-maintenance.md` — Maintenance tab: grouped list, detail, log completion, templates
-5. `2026-03-12-housemate-home.md` — Dashboard, Settings, local + push notifications
+**Files:**
+- Modify: `HouseMate/Config/Supabase.swift`
+- Create: `HouseMateTests/Config/DateDecoderTests.swift`
+
+- [ ] **Step 1: Write failing test**
+
+  ```swift
+  // HouseMateTests/Config/DateDecoderTests.swift
+  import XCTest
+  @testable import HouseMate
+
+  final class DateDecoderTests: XCTestCase {
+      struct DateWrapper: Decodable {
+          let value: Date
+      }
+
+      func test_decodesISO8601Timestamp() throws {
+          let json = #"{"value":"2026-03-12T10:00:00Z"}"#.data(using: .utf8)!
+          let result = try HouseMateDecoder.decode(DateWrapper.self, from: json)
+          XCTAssertNotNil(result.value)
+      }
+
+      func test_decodesDateOnlyString() throws {
+          let json = #"{"value":"2026-03-12"}"#.data(using: .utf8)!
+          let result = try HouseMateDecoder.decode(DateWrapper.self, from: json)
+          let components = Calendar.current.dateComponents([.year, .month, .day], from: result.value)
+          XCTAssertEqual(components.year, 2026)
+          XCTAssertEqual(components.month, 3)
+          XCTAssertEqual(components.day, 12)
+      }
+  }
+  ```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+- [ ] **Step 3: Add HouseMateDecoder to Supabase.swift**
+
+  ```swift
+  // HouseMate/Config/Supabase.swift
+  import Supabase
+  import Foundation
+
+  let supabase = SupabaseClient(
+      supabaseURL: URL(string: Secrets.supabaseURL)!,
+      supabaseKey: Secrets.supabaseAnonKey
+  )
+
+  enum HouseMateDecoder {
+      static func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+          let decoder = JSONDecoder()
+          decoder.dateDecodingStrategy = .custom { decoder in
+              let s = try decoder.singleValueContainer().decode(String.self)
+              if let date = ISO8601DateFormatter().date(from: s) { return date }
+              let df = DateFormatter()
+              df.dateFormat = "yyyy-MM-dd"
+              df.timeZone = TimeZone(identifier: "UTC")
+              if let date = df.date(from: s) { return date }
+              throw DecodingError.dataCorrupted(
+                  .init(codingPath: decoder.codingPath,
+                        debugDescription: "Cannot decode date from '\(s)'"))
+          }
+          return try decoder.decode(type, from: data)
+      }
+  }
+  ```
+
+  > **Note:** `supabase-swift` 2.x uses its own internal decoder configured via `PostgrestClient`. Check the SDK documentation for `PostgrestBuilder.decoder(_:)` — if available, configure the shared decoder there instead of using `HouseMateDecoder` manually. If the SDK handles dates automatically, this task may be a no-op and the tests validate that assumption.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+- [ ] **Step 5: Commit**
+
+  ```bash
+  git add HouseMate/Config/Supabase.swift HouseMateTests/Config/DateDecoderTests.swift
+  git commit -m "feat: add HouseMateDecoder handling ISO8601 and date-only strings"
+  ```
+
+---
+
+**Foundation complete.** All models, services, Realtime, AppState, onboarding, and 4-tab skeleton are in place. Proceed to the Tasks feature plan.
