@@ -40,6 +40,9 @@ final class MaintenanceService {
             .execute()
     }
 
+    /// Logs a completion and updates the item's lastCompletedDate.
+    /// Note: these two writes are not atomic. If updateItem throws, the log row will have been
+    /// committed. Callers should check for an existing log on the same date before retrying.
     func logCompletion(_ log: MaintenanceLog, updatingItem item: MaintenanceItem) async throws -> MaintenanceItem {
         // Insert log
         try await supabase.from("maintenance_logs").insert(log).execute()
