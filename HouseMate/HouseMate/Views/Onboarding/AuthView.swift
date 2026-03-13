@@ -5,7 +5,6 @@ struct AuthView: View {
     @Environment(AppState.self) private var appState
     @State private var email = ""
     @State private var password = ""
-    @State private var displayName = ""
     @State private var isSignUp = true
     @State private var isLoading = false
     @State private var errorMessage: String?
@@ -21,9 +20,6 @@ struct AuthView: View {
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                     SecureField("Password", text: $password)
-                    if isSignUp {
-                        TextField("Your display name", text: $displayName)
-                    }
                 }
                 if let error = errorMessage {
                     Section { Text(error).foregroundStyle(.red) }
@@ -32,7 +28,7 @@ struct AuthView: View {
                     Button(isSignUp ? "Create Account" : "Sign In") {
                         Task { await submit() }
                     }
-                    .disabled(isLoading || email.isEmpty || password.isEmpty || (isSignUp && displayName.isEmpty))
+                    .disabled(isLoading || email.isEmpty || password.isEmpty)
                 }
                 Section {
                     Button(isSignUp ? "Already have an account? Sign In" : "New here? Create Account") {
@@ -48,6 +44,7 @@ struct AuthView: View {
     }
 
     private func submit() async {
+        defer { isLoading = false }
         isLoading = true
         errorMessage = nil
         do {
@@ -60,6 +57,5 @@ struct AuthView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
-        isLoading = false
     }
 }

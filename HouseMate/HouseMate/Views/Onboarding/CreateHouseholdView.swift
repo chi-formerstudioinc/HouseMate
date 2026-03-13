@@ -40,6 +40,7 @@ struct CreateHouseholdView: View {
 
     private func create() async {
         guard let userId = appState.currentUserId else { return }
+        defer { isLoading = false }
         isLoading = true
         errorMessage = nil
         do {
@@ -52,6 +53,5 @@ struct CreateHouseholdView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
-        isLoading = false
     }
 }

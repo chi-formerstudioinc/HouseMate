@@ -43,6 +43,7 @@ struct JoinHouseholdView: View {
 
     private func join() async {
         guard let userId = appState.currentUserId else { return }
+        defer { isLoading = false }
         isLoading = true
         errorMessage = nil
         do {
@@ -56,6 +57,5 @@ struct JoinHouseholdView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
-        isLoading = false
     }
 }
