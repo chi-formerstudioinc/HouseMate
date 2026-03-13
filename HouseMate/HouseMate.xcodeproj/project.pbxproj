@@ -23,6 +23,10 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXBuildFile section */
+		AA000001AA000001AA000001 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = AA000002AA000002AA000002 /* Supabase */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		D34739212F635A870039EFB7 /* HouseMate.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HouseMate.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D347392E2F635A880039EFB7 /* HouseMateTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HouseMateTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -52,6 +56,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AA000001AA000001AA000001 /* Supabase in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +117,7 @@
 			);
 			name = HouseMate;
 			packageProductDependencies = (
+				AA000002AA000002AA000002 /* Supabase */,
 			);
 			productName = HouseMate;
 			productReference = D34739212F635A870039EFB7 /* HouseMate.app */;
@@ -165,6 +171,25 @@
 		};
 /* End PBXNativeTarget section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		AA000003AA000003AA000003 /* XCRemoteSwiftPackageReference "supabase-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/supabase/supabase-swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.5.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AA000002AA000002AA000002 /* Supabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA000003AA000003AA000003 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Supabase;
+		};
+/* End XCSwiftPackageProductDependency section */
+
 /* Begin PBXProject section */
 		D34739192F635A870039EFB7 /* Project object */ = {
 			isa = PBXProject;
@@ -196,6 +221,9 @@
 			mainGroup = D34739182F635A870039EFB7;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
+			packageReferences = (
+				AA000003AA000003AA000003 /* XCRemoteSwiftPackageReference "supabase-swift" */,
+			);
 			productRefGroup = D34739222F635A870039EFB7 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
