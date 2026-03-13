@@ -30,6 +30,9 @@ struct BinSchedule: Codable, Identifiable {
 
     /// Returns the rotation label (rotationA or rotationB) for the given pickup date.
     func rotation(for date: Date) -> String {
+        // startingDate is decoded from a DATE column (UTC midnight via HouseMateDecoder).
+        // startOfDay normalises both sides to local midnight, so daysDiff is correct in whole days
+        // regardless of timezone, as long as the device timezone offset is less than 24 hours.
         let cal = Calendar.current
         let start = cal.startOfDay(for: startingDate)
         let target = cal.startOfDay(for: date)

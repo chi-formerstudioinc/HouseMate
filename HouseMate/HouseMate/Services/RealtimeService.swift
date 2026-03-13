@@ -34,6 +34,8 @@ final class RealtimeService {
             }
         }
 
+        // No household_id filter: task_completion_logs has no household_id column (FK through task_id).
+        // RLS prevents data exposure; the notification may fire for foreign households but triggers a no-op refresh.
         ch.onPostgresChange(AnyAction.self, schema: "public", table: "task_completion_logs") { [weak self] _ in
             Task { @MainActor in
                 NotificationCenter.default.post(name: RealtimeService.tasksChangedNotification.name, object: nil)
@@ -54,6 +56,7 @@ final class RealtimeService {
             }
         }
 
+        // No household_id filter: maintenance_logs has no household_id column (FK through maintenance_item_id).
         ch.onPostgresChange(AnyAction.self, schema: "public", table: "maintenance_logs") { [weak self] _ in
             Task { @MainActor in
                 NotificationCenter.default.post(name: RealtimeService.maintenanceChangedNotification.name, object: nil)
