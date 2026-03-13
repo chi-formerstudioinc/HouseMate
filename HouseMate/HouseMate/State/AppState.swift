@@ -9,16 +9,35 @@ final class AppState {
     var household: Household?
     var currentMember: Member?
     var members: [Member] = []
+    var isAuthenticated = false
+    var currentUserId: UUID?
 
-    private let authService = AuthService()
-
-    var isAuthenticated: Bool { authService.currentUser != nil }
     var hasHousehold: Bool { household != nil }
-    var currentUserId: UUID? { authService.currentUser?.id }
 
-    func loadSession() async {
-        _ = try? await authService.restoreSession()
-        guard isAuthenticated, let userId = currentUserId else { return }
+    // Call once on app launch — listens to Supabase auth events for the lifetime of the app.
+    nonisolated func startListeningToAuth() {
+        Task { @MainActor in
+            for await (event, session) in supabase.auth.authStateChanges {
+                isAuthenticated = session != nil
+                currentUserId = session?.user.id
+
+                switch event {
+                case .initialSession, .signedIn, .tokenRefreshed:
+                    if let userId = session?.user.id {
+                        await loadHouseholdData(userId: userId)
+                    }
+                case .signedOut:
+                    household = nil
+                    currentMember = nil
+                    members = []
+                default:
+                    break
+                }
+            }
+        }
+    }
+
+    private func loadHouseholdData(userId: UUID) async {
         let memberService = MemberService()
         guard let member = try? await memberService.fetchMember(userId: userId) else { return }
         currentMember = member
@@ -32,8 +51,10 @@ final class AppState {
             household = nil
             currentMember = nil
             members = []
+            isAuthenticated = false
+            currentUserId = nil
         }
-        try await authService.signOut()
+        try await supabase.auth.signOut()
     }
 
     func memberName(for memberId: UUID?) -> String {

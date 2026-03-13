@@ -9,7 +9,7 @@ struct HouseMateApp: App {
         WindowGroup {
             ContentView()
                 .environment(appState)
-                .task { await appState.loadSession() }
+                .onAppear { appState.startListeningToAuth() }
         }
     }
 }

@@ -53,7 +53,7 @@ struct AuthView: View {
             } else {
                 _ = try await authService.signIn(email: email, password: password)
             }
-            await appState.loadSession()
+            // Auth state listener in AppState handles session + navigation automatically
         } catch {
             errorMessage = error.localizedDescription
         }
