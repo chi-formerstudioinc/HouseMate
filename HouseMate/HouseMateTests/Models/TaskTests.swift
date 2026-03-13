@@ -23,7 +23,7 @@ final class TaskTests: XCTestCase {
           "updated_at": "2026-01-01T00:00:00Z"
         }
         """.data(using: .utf8)!
-        let task = try JSONDecoder.houseMate.decode(HMTask.self, from: json)
+        let task = try HouseMateDecoder.decode(HMTask.self, from: json)
         XCTAssertEqual(task.title, "Take out trash")
         XCTAssertEqual(task.recurringInterval, .weekly)
         XCTAssertFalse(task.isCompleted)
@@ -80,7 +80,7 @@ final class TaskTests: XCTestCase {
           "completed_at": "2026-01-01T00:00:00Z"
         }
         """.data(using: .utf8)!
-        let log = try JSONDecoder.houseMate.decode(TaskCompletionLog.self, from: json)
+        let log = try HouseMateDecoder.decode(TaskCompletionLog.self, from: json)
         XCTAssertEqual(log.taskId, UUID(uuidString: "00000000-0000-0000-0000-000000000002"))
         XCTAssertEqual(log.completedBy, UUID(uuidString: "00000000-0000-0000-0000-000000000003"))
         XCTAssertNotNil(log.completedAt)

@@ -12,9 +12,7 @@ final class HouseholdTests: XCTestCase {
           "created_at": "2026-01-01T00:00:00Z"
         }
         """.data(using: .utf8)!
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let household = try decoder.decode(Household.self, from: json)
+        let household = try HouseMateDecoder.decode(Household.self, from: json)
         XCTAssertEqual(household.name, "Test House")
         XCTAssertEqual(household.id, UUID(uuidString: "00000000-0000-0000-0000-000000000001"))
         XCTAssertEqual(household.createdBy, UUID(uuidString: "00000000-0000-0000-0000-000000000002"))
@@ -31,9 +29,7 @@ final class HouseholdTests: XCTestCase {
           "created_at": "2026-01-01T00:00:00Z"
         }
         """.data(using: .utf8)!
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let member = try decoder.decode(Member.self, from: json)
+        let member = try HouseMateDecoder.decode(Member.self, from: json)
         XCTAssertEqual(member.displayName, "Alice")
         XCTAssertEqual(member.id, UUID(uuidString: "00000000-0000-0000-0000-000000000001"))
         XCTAssertEqual(member.householdId, UUID(uuidString: "00000000-0000-0000-0000-000000000002"))
@@ -52,9 +48,7 @@ final class HouseholdTests: XCTestCase {
           "created_at": "2026-01-01T00:00:00Z"
         }
         """.data(using: .utf8)!
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let invite = try decoder.decode(HouseholdInvite.self, from: json)
+        let invite = try HouseMateDecoder.decode(HouseholdInvite.self, from: json)
         XCTAssertEqual(invite.inviteCode, "ABC12345")
         XCTAssertTrue(invite.isActive)
         XCTAssertEqual(invite.householdId, UUID(uuidString: "00000000-0000-0000-0000-000000000002"))

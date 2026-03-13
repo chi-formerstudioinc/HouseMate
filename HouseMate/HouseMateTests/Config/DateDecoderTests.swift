@@ -10,7 +10,13 @@ final class DateDecoderTests: XCTestCase {
     func test_decodesISO8601Timestamp() throws {
         let json = #"{"value":"2026-03-12T10:00:00Z"}"#.data(using: .utf8)!
         let result = try HouseMateDecoder.decode(DateWrapper.self, from: json)
-        XCTAssertNotNil(result.value)
+        var utcCalendar = Calendar(identifier: .gregorian)
+        utcCalendar.timeZone = TimeZone(identifier: "UTC")!
+        let components = utcCalendar.dateComponents([.year, .month, .day, .hour], from: result.value)
+        XCTAssertEqual(components.year, 2026)
+        XCTAssertEqual(components.month, 3)
+        XCTAssertEqual(components.day, 12)
+        XCTAssertEqual(components.hour, 10)
     }
 
     func test_decodesDateOnlyString() throws {
