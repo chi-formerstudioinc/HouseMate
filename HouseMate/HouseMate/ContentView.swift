@@ -1,24 +1,16 @@
-//
-//  ContentView.swift
-//  HouseMate
-//
-//  Created by Chi  on 2026-03-12.
-//
-
+// HouseMate/App/ContentView.swift
 import SwiftUI
 
 struct ContentView: View {
-    var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
-        }
-        .padding()
-    }
-}
+    @Environment(AppState.self) private var appState
 
-#Preview {
-    ContentView()
+    var body: some View {
+        if !appState.isAuthenticated {
+            AuthView()
+        } else if !appState.hasHousehold {
+            HouseholdChoiceView()
+        } else {
+            MainTabView()
+        }
+    }
 }
