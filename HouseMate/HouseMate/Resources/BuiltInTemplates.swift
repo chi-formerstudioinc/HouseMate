@@ -22,15 +22,15 @@ enum BuiltInTemplates {
     ]
 
     static let maintenance: [MaintenanceTemplate] = [
-        MaintenanceTemplate(builtInName: "Change furnace filter", category: .yearRound, intervalDays: 90),
-        MaintenanceTemplate(builtInName: "Replace HVAC filter", category: .yearRound, intervalDays: 90),
-        MaintenanceTemplate(builtInName: "Clean dryer vent", category: .yearRound, intervalDays: 365),
-        MaintenanceTemplate(builtInName: "Sweep/blow out garage", category: .yearRound, intervalDays: 30),
-        MaintenanceTemplate(builtInName: "Test smoke detectors", category: .yearRound, intervalDays: 180),
-        MaintenanceTemplate(builtInName: "Clean range hood filter", category: .yearRound, intervalDays: 90),
-        MaintenanceTemplate(builtInName: "Flush water heater", category: .yearRound, intervalDays: 365),
-        MaintenanceTemplate(builtInName: "Check window/door seals", category: .fall, intervalDays: 365),
-        MaintenanceTemplate(builtInName: "Clean gutters", category: .spring, intervalDays: 180),
-        MaintenanceTemplate(builtInName: "Winterize outdoor faucets", category: .fall, intervalDays: 365),
+        MaintenanceTemplate(builtInName: "Change furnace filter", category: .hvac, intervalDays: 90),
+        MaintenanceTemplate(builtInName: "Replace HVAC filter", category: .hvac, intervalDays: 90),
+        MaintenanceTemplate(builtInName: "Clean dryer vent", category: .hvac, intervalDays: 365),
+        MaintenanceTemplate(builtInName: "Sweep/blow out garage", category: .structural, intervalDays: 30),
+        MaintenanceTemplate(builtInName: "Test smoke detectors", category: .electrical, intervalDays: 180),
+        MaintenanceTemplate(builtInName: "Clean range hood filter", category: .hvac, intervalDays: 90),
+        MaintenanceTemplate(builtInName: "Flush water heater", category: .plumbing, intervalDays: 365),
+        MaintenanceTemplate(builtInName: "Check window/door seals", category: .exterior, intervalDays: 365),
+        MaintenanceTemplate(builtInName: "Clean gutters", category: .exterior, intervalDays: 180),
+        MaintenanceTemplate(builtInName: "Winterize outdoor faucets", category: .plumbing, intervalDays: 365),
     ]
 }

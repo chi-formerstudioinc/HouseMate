@@ -1,73 +1,36 @@
 // HouseMate/Services/MaintenanceService.swift
-import Supabase
 import Foundation
+
+// NOTE: This service is stubbed pending the real Supabase schema migration for the new
+// MaintenanceItem model (itemType, title, category, etc.). The UI shell uses MockMaintenanceData.
 
 @MainActor
 final class MaintenanceService {
     func fetchItems(householdId: UUID) async throws -> [MaintenanceItem] {
-        try await supabase
-            .from("maintenance_items")
-            .select()
-            .eq("household_id", value: householdId.uuidString)
-            .order("name", ascending: true)
-            .execute()
-            .value
+        return []
     }
 
     func createItem(_ item: MaintenanceItem) async throws -> MaintenanceItem {
-        try await supabase
-            .from("maintenance_items")
-            .insert(item)
-            .select()
-            .single()
-            .execute()
-            .value
+        return item
     }
 
     func updateItem(_ item: MaintenanceItem) async throws {
-        try await supabase
-            .from("maintenance_items")
-            .update(item)
-            .eq("id", value: item.id.uuidString)
-            .execute()
+        // stub
     }
 
     func deleteItem(id: UUID) async throws {
-        try await supabase
-            .from("maintenance_items")
-            .delete()
-            .eq("id", value: id.uuidString)
-            .execute()
+        // stub
     }
 
-    /// Logs a completion and updates the item's lastCompletedDate.
-    /// Note: these two writes are not atomic. If updateItem throws, the log row will have been
-    /// committed. Callers should check for an existing log on the same date before retrying.
-    func logCompletion(_ log: MaintenanceLog, updatingItem item: MaintenanceItem) async throws -> MaintenanceItem {
-        // Insert log
-        try await supabase.from("maintenance_logs").insert(log).execute()
-        // Update item's lastCompletedDate
-        var updated = item
-        updated.lastCompletedDate = log.completedDate
-        try await updateItem(updated)
-        return updated
+    func logCompletion(_ log: MaintenanceCompletionLog, updatingItem item: MaintenanceItem) async throws -> MaintenanceItem {
+        return item
     }
 
-    func fetchLogs(itemId: UUID) async throws -> [MaintenanceLog] {
-        try await supabase
-            .from("maintenance_logs")
-            .select()
-            .eq("maintenance_item_id", value: itemId.uuidString)
-            .order("completed_date", ascending: false)
-            .execute()
-            .value
+    func fetchLogs(itemId: UUID) async throws -> [MaintenanceCompletionLog] {
+        return []
     }
 
     func deleteLog(id: UUID) async throws {
-        try await supabase
-            .from("maintenance_logs")
-            .delete()
-            .eq("id", value: id.uuidString)
-            .execute()
+        // stub
     }
 }

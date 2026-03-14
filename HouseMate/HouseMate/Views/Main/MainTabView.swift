@@ -10,7 +10,7 @@ struct MainTabView: View {
                 .tabItem { Label("Tasks", systemImage: "checklist") }
             Text("Bins")
                 .tabItem { Label("Bins", systemImage: "trash") }
-            Text("Maintenance")
+            MaintenanceListView()
                 .tabItem { Label("Maintenance", systemImage: "wrench.and.screwdriver") }
         }
     }

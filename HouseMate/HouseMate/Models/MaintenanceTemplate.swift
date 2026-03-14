@@ -1,6 +1,10 @@
 // HouseMate/Models/MaintenanceTemplate.swift
 import Foundation
 
+// NOTE: MaintenanceTemplate is a legacy concept used by BuiltInTemplates/TemplateService.
+// The new MaintenanceItem model no longer has a templateId. This struct is kept for
+// backward compatibility until the template flow is redesigned.
+
 struct MaintenanceTemplate: Codable, Identifiable {
     let id: UUID
     let householdId: UUID?  // nil for built-in
