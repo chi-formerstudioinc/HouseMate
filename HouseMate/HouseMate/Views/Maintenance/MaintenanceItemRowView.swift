@@ -27,7 +27,7 @@ struct MaintenanceItemRowView: View {
             }
         }
         .listRowBackground(Color.clear)
-        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
         .listRowSeparator(.hidden)
     }
 
@@ -41,7 +41,7 @@ struct MaintenanceItemRowView: View {
                 .frame(width: 3)
                 .padding(.vertical, 2)
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text(item.title)
                         .font(.body.weight(.medium))
@@ -52,7 +52,17 @@ struct MaintenanceItemRowView: View {
                     if item.repairStatus != .completed { deleteButton }
                 }
 
-                categoryChip
+                HStack(spacing: 6) {
+                    categoryChip
+                    if let freq = item.frequency {
+                        Text("Repeats · \(freq.displayName)")
+                            .font(.caption2.weight(.medium))
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(Color.orange.opacity(0.15))
+                            .foregroundStyle(Color.orange)
+                            .clipShape(Capsule())
+                    }
+                }
 
                 HStack(spacing: 6) {
                     if let due = item.choreDueDate, item.repairStatus != .completed {
@@ -62,13 +72,18 @@ struct MaintenanceItemRowView: View {
                                 Text("\(item.choreDaysOverdue)d overdue")
                                     .font(.caption).foregroundStyle(.red)
                             } else {
-                                Text("By \(due.formatted(date: .abbreviated, time: .omitted))")
+                                Text(dueDateLabel(due))
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         }
                         .foregroundStyle(item.isChoreOverdue ? .red : .secondary)
                     }
-                    if let cost = item.estimatedCost {
+                    if item.repairStatus == .completed {
+                        if let cost = item.actualCost {
+                            Text("Cost: $\(NSDecimalNumber(decimal: cost).intValue)")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    } else if let cost = item.estimatedCost {
                         Text("Est: $\(NSDecimalNumber(decimal: cost).intValue)")
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -126,7 +141,7 @@ struct MaintenanceItemRowView: View {
                     .frame(width: 3)
                     .padding(.vertical, 2)
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text(item.title)
                             .font(.body.weight(.medium))
@@ -135,10 +150,6 @@ struct MaintenanceItemRowView: View {
                         memberAvatar
                         editButton
                         if item.repairStatus != .completed { deleteButton }
-                    }
-
-                    if let desc = item.description {
-                        Text(desc).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     }
 
                     categoryChip
@@ -151,13 +162,18 @@ struct MaintenanceItemRowView: View {
                                     Text("\(item.repairDaysOverdue)d overdue")
                                         .font(.caption).foregroundStyle(.red)
                                 } else {
-                                    Text("By \(deadline.formatted(date: .abbreviated, time: .omitted))")
+                                    Text(dueDateLabel(deadline))
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                             }
                             .foregroundStyle(item.isRepairOverdue ? .red : .secondary)
                         }
-                        if let cost = item.estimatedCost {
+                        if item.repairStatus == .completed {
+                            if let cost = item.actualCost {
+                                Text("Cost: $\(NSDecimalNumber(decimal: cost).intValue)")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        } else if let cost = item.estimatedCost {
                             Text("Est: $\(NSDecimalNumber(decimal: cost).intValue)")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
@@ -275,7 +291,7 @@ struct MaintenanceItemRowView: View {
                             let days = Calendar.current.dateComponents([.day], from: next, to: Date()).day ?? 0
                             Text("\(days) days overdue").font(.caption).foregroundStyle(.red)
                         } else {
-                            Text("Due \(next.formatted(date: .abbreviated, time: .omitted))")
+                            Text(dueDateLabel(next))
                                 .font(.caption).foregroundStyle(.green)
                         }
                     }
@@ -458,6 +474,23 @@ struct MaintenanceItemRowView: View {
             Image(systemName: "trash").font(.caption).foregroundStyle(.secondary)
         }
         .buttonStyle(.plain)
+    }
+
+    private func dueDateLabel(_ date: Date) -> String {
+        let today = Calendar.current.startOfDay(for: Date())
+        let target = Calendar.current.startOfDay(for: date)
+        let days = Calendar.current.dateComponents([.day], from: today, to: target).day ?? 0
+        if days <= 0 { return "Due today" }
+        if days == 1 { return "Due tomorrow" }
+        if days < 7 { return "Due in \(days) days" }
+        if days < 11 { return "Due in 1 week" }
+        if days < 18 { return "Due in 2 weeks" }
+        if days < 25 { return "Due in 3 weeks" }
+        if days < 45 { return "Due in 1 month" }
+        if days < 75 { return "Due in 2 months" }
+        if days < 105 { return "Due in 3 months" }
+        let months = max(4, Int((Double(days) / 30.0).rounded()))
+        return "Due in \(months) months"
     }
 
     // MARK: - Relative date helper

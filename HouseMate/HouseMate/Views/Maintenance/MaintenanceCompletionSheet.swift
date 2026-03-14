@@ -21,7 +21,7 @@ struct MaintenanceCompletionSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 24) {
+            VStack(spacing: 20) {
                 VStack(spacing: 8) {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 56))
@@ -32,7 +32,7 @@ struct MaintenanceCompletionSheet: View {
                         .font(.body)
                         .foregroundStyle(.secondary)
                 }
-                .padding(.top, 32)
+                .padding(.top, showsCostField ? 32 : 16)
 
                 if showsCostField {
                     VStack(alignment: .leading, spacing: 8) {
@@ -52,7 +52,7 @@ struct MaintenanceCompletionSheet: View {
                     .padding(.horizontal)
                 }
 
-                Spacer()
+                if showsCostField { Spacer() }
 
                 Button {
                     let cost = Int(actualCostText).map { Decimal($0) }
@@ -76,6 +76,6 @@ struct MaintenanceCompletionSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium])
+        .presentationDetents(showsCostField ? [.medium] : [.height(220)])
     }
 }

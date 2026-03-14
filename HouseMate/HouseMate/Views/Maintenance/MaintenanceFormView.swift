@@ -17,12 +17,11 @@ struct MaintenanceFormView: View {
     @State private var scheduledDate = Date()
     @State private var contractor = ""
     @State private var estimatedCostText = ""
-    // Repair / Chore
-    @State private var repairDescription = ""
+    // Repair / Chore deadline
     @State private var completeBy: Date = Calendar.current.date(byAdding: .day, value: 14, to: Date())!
     // Chore repeat
     @State private var choreFrequency: MaintenanceFrequency? = nil
-    // Maintenance
+    // Maintenance schedule
     @State private var frequency: MaintenanceFrequency = .monthly
     @State private var startDate = Date()
     // Asset
@@ -34,7 +33,7 @@ struct MaintenanceFormView: View {
     private let editingItem: MaintenanceItem?
     private var isEditing: Bool { editingItem != nil }
 
-    private let taskTypes: [MaintenanceItemType] = [.chore, .repair, .maintenance]
+    private let taskTypes: [MaintenanceItemType] = [.chore, .repair, .maintenance, .asset]
 
     private let maintenanceCategorySuggestions: [MaintenanceCategory: [String]] = [
         .aroundTheHouse: ["Change Bed Sheets", "Clean Bathrooms", "Dust the House", "Deep Vacuum", "Return Items"],
@@ -45,7 +44,7 @@ struct MaintenanceFormView: View {
         .vehicle: ["Oil Change", "Tire Rotation", "Check Brakes", "Annual Service"],
     ]
     private let repairSuggestions = ["Fix Leaking Pipe", "Repair Broken Window", "Replace Damaged Tile",
-                                      "Patch Drywall Hole", "Fix Stuck Door"]
+                                     "Patch Drywall Hole", "Fix Stuck Door"]
     private let choreSuggestions: [MaintenanceCategory: [String]] = [
         .aroundTheHouse: ["Return Items", "Deep Vacuum", "Organize Pantry", "Clear Junk Mail", "Donate Old Clothes"],
         .exterior: ["Mow Lawn", "Weed Garden", "Clean Garage"],
@@ -63,11 +62,10 @@ struct MaintenanceFormView: View {
             _category = State(initialValue: item.category)
             _notes = State(initialValue: item.notes ?? "")
             _assignedTo = State(initialValue: item.assignedTo)
-            _requiresScheduling = State(initialValue: item.requiresScheduling)
+            _requiresScheduling = State(initialValue: item.requiresScheduling || item.contractor != nil || item.scheduledDate != nil)
             _choreFrequency = State(initialValue: item.itemType == .chore ? item.frequency : nil)
             _frequency = State(initialValue: item.frequency ?? .monthly)
             _startDate = State(initialValue: item.startDate ?? Date())
-            _repairDescription = State(initialValue: item.description ?? "")
             _estimatedCostText = State(initialValue: item.estimatedCost.map {
                 let val = NSDecimalNumber(decimal: $0).doubleValue
                 return val.truncatingRemainder(dividingBy: 1) == 0
@@ -88,16 +86,16 @@ struct MaintenanceFormView: View {
     var body: some View {
         NavigationStack {
             Form {
-                // Type selector (create only, task types)
-                if !isEditing && itemType != .asset {
+                // Type selector (create only)
+                if !isEditing {
                     Section {
                         typeSelectorCards
                     }
-                    .listRowInsets(EdgeInsets())
+                    .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
                     .listRowBackground(Color.clear)
                 }
 
-                // Title
+                // Title + Category in one card
                 Section {
                     TextField(titlePlaceholder, text: $title)
                         .onChange(of: title) { _, new in
@@ -122,35 +120,19 @@ struct MaintenanceFormView: View {
                             }
                         }
                     }
-                } header: { Text(taskFieldLabel) }
-
-                // Category
-                Section("Category") {
                     Picker("Category", selection: $category) {
                         ForEach(MaintenanceCategory.allCases, id: \.self) {
                             Label($0.displayName, systemImage: $0.iconName).tag($0)
                         }
                     }
-                }
-
-                // Assign To (not for assets)
-                if itemType != .asset {
-                    Section {
-                        Picker("Assign to", selection: $assignedTo) {
-                            Text("Unassigned").tag(Optional<UUID>.none)
-                            ForEach(members) { m in
-                                Text(m.displayName).tag(Optional(m.id))
-                            }
-                        }
-                    } header: { optionalHeader("Assign To") }
-                }
+                } header: { Text(taskFieldLabel) }
 
                 // Type-specific fields
                 switch itemType {
-                case .chore:    choreFields
-                case .repair:   repairFields
+                case .chore:       choreFields
+                case .repair:      repairFields
                 case .maintenance: maintenanceFields
-                case .asset:    assetFields
+                case .asset:       assetFields
                 }
             }
             .navigationTitle(isEditing ? "Edit" : "Add")
@@ -176,45 +158,51 @@ struct MaintenanceFormView: View {
                     Text($0.displayName).tag(Optional($0))
                 }
             }
-        } header: { optionalHeader("Repeat") }
-
-        Section {
-            datePicker("Complete by", selection: $completeBy)
-        } header: { optionalHeader("Due Date") }
-
-        Section {
+            if choreFrequency == nil {
+                datePicker("Due date", selection: $completeBy)
+            }
+            if !members.isEmpty {
+                Picker("Assign to", selection: $assignedTo) {
+                    Text("Unassigned").tag(Optional<UUID>.none)
+                    ForEach(members) { m in
+                        Text(m.displayName).tag(Optional(m.id))
+                    }
+                }
+            }
             Toggle("Requires scheduling", isOn: $requiresScheduling)
             if requiresScheduling {
                 TextField("Contractor", text: $contractor)
-                costField
                 datePicker("Scheduled date", selection: $scheduledDate)
             }
-        } header: { optionalHeader("Schedule") }
-
-        Section {
+            costField
             TextField("Notes", text: $notes, axis: .vertical)
                 .lineLimit(3, reservesSpace: false)
-        } header: { optionalHeader("Notes") }
+        } header: { optionalHeader("Optional") }
     }
 
     // MARK: - Repair fields
 
     @ViewBuilder
     private var repairFields: some View {
-        Section("Details") {
-            TextField("Description", text: $repairDescription, axis: .vertical)
-                .lineLimit(3, reservesSpace: false)
-            costField
-        }
-
         Section {
-            datePicker("Complete by", selection: $completeBy)
+            datePicker("Due date", selection: $completeBy)
+            if !members.isEmpty {
+                Picker("Assign to", selection: $assignedTo) {
+                    Text("Unassigned").tag(Optional<UUID>.none)
+                    ForEach(members) { m in
+                        Text(m.displayName).tag(Optional(m.id))
+                    }
+                }
+            }
             Toggle("Requires scheduling", isOn: $requiresScheduling)
             if requiresScheduling {
                 TextField("Contractor", text: $contractor)
                 datePicker("Scheduled date", selection: $scheduledDate)
             }
-        } header: { optionalHeader("Schedule") }
+            costField
+            TextField("Notes", text: $notes, axis: .vertical)
+                .lineLimit(3, reservesSpace: false)
+        } header: { optionalHeader("Optional") }
     }
 
     // MARK: - Maintenance fields
@@ -228,45 +216,46 @@ struct MaintenanceFormView: View {
                 }
             }
             datePicker("Start date", selection: $startDate)
+        }
+        Section {
+            if !members.isEmpty {
+                Picker("Assign to", selection: $assignedTo) {
+                    Text("Unassigned").tag(Optional<UUID>.none)
+                    ForEach(members) { m in
+                        Text(m.displayName).tag(Optional(m.id))
+                    }
+                }
+            }
             Toggle("Requires scheduling", isOn: $requiresScheduling)
             if requiresScheduling {
                 TextField("Contractor", text: $contractor)
                 costField
                 datePicker("Scheduled date", selection: $scheduledDate)
             }
-        }
-        Section {
             TextField("Notes", text: $notes, axis: .vertical)
                 .lineLimit(3, reservesSpace: false)
-        } header: { optionalHeader("Notes") }
+        } header: { optionalHeader("Optional") }
     }
 
     // MARK: - Asset fields
 
     @ViewBuilder
     private var assetFields: some View {
-        Section("Appliance Details") {
+        Section("Details") {
             datePicker("Installation date", selection: $installedDate)
             TextField("Expected life (years)", text: $expectedLifeYears)
                 .keyboardType(.numberPad)
             TextField("Brand", text: $brand)
             TextField("Model", text: $model)
-        }
-        Section {
             TextField("Notes", text: $notes, axis: .vertical)
                 .lineLimit(3, reservesSpace: false)
-        } header: { optionalHeader("Notes") }
+        }
     }
 
     // MARK: - Helpers
 
     private func optionalHeader(_ label: String) -> some View {
-        HStack(spacing: 4) {
-            Text(label)
-            Text("· optional")
-                .foregroundStyle(.secondary)
-                .fontWeight(.regular)
-        }
+        Text(label)
     }
 
     private func datePicker(_ label: String, selection: Binding<Date>) -> some View {
@@ -284,7 +273,7 @@ struct MaintenanceFormView: View {
     private var costField: some View {
         HStack(spacing: 4) {
             Text("$").foregroundStyle(.secondary)
-            TextField("0", text: $estimatedCostText)
+            TextField("Estimated cost", text: $estimatedCostText)
                 .keyboardType(.decimalPad)
                 .onChange(of: estimatedCostText) { _, newVal in
                     let filtered = newVal.filter { $0.isNumber || $0 == "." }
@@ -309,12 +298,16 @@ struct MaintenanceFormView: View {
                         Text(type.displayName)
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(itemType == type ? .white : .primary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
                         Text(typeSubtitle(type))
                             .font(.caption2)
                             .foregroundStyle(itemType == type ? .white.opacity(0.8) : .secondary)
                             .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, minHeight: 84)
+                    .padding(.horizontal, 8)
                     .padding(.vertical, 12)
                     .background(itemType == type ? Color.accentColor : Color.secondary.opacity(0.08))
                     .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -322,14 +315,15 @@ struct MaintenanceFormView: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding()
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
     }
 
     private var taskFieldLabel: String {
         switch itemType {
         case .chore: return "Chore"
         case .repair: return "Repair Task"
-        case .maintenance: return "Recurring Task"
+        case .maintenance: return "Maintenance Task"
         case .asset: return "Appliance"
         }
     }
@@ -388,7 +382,7 @@ struct MaintenanceFormView: View {
         item.title = trimmed
         item.category = category
         item.notes = notes.isEmpty ? nil : notes
-        item.assignedTo = itemType == .asset ? nil : assignedTo
+        item.assignedTo = itemType == .asset ? nil : (members.isEmpty ? nil : assignedTo)
 
         switch itemType {
         case .chore:
@@ -398,17 +392,26 @@ struct MaintenanceFormView: View {
             item.completeBy = choreFrequency == nil ? completeBy : nil
             item.requiresScheduling = requiresScheduling
             item.contractor = requiresScheduling && !contractor.isEmpty ? contractor : nil
-            item.estimatedCost = requiresScheduling ? Double(estimatedCostText).map { Decimal($0) } : nil
             item.scheduledDate = requiresScheduling ? scheduledDate : nil
+            item.estimatedCost = Double(estimatedCostText).map { Decimal($0) }
 
         case .repair:
-            item.description = repairDescription.isEmpty ? nil : repairDescription
+            item.description = nil
             item.estimatedCost = Double(estimatedCostText).map { Decimal($0) }
             item.completeBy = completeBy
             item.requiresScheduling = requiresScheduling
             item.contractor = requiresScheduling && !contractor.isEmpty ? contractor : nil
             item.scheduledDate = requiresScheduling ? scheduledDate : nil
-            if editingItem == nil { item.repairStatus = .open }
+            if editingItem == nil {
+                item.repairStatus = .open
+            } else if item.repairStatus != .completed {
+                // Promote to scheduled when contractor info is provided; demote if toggled off
+                if requiresScheduling && !contractor.isEmpty {
+                    item.repairStatus = .scheduled
+                } else if !requiresScheduling {
+                    item.repairStatus = .open
+                }
+            }
 
         case .maintenance:
             item.frequency = frequency
