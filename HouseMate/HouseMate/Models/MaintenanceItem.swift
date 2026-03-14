@@ -9,10 +9,12 @@ enum MaintenanceItemType: String, Codable, CaseIterable {
 }
 
 enum MaintenanceCategory: String, Codable, CaseIterable {
-    case exterior, hvac, electrical, plumbing, structural, vehicle
+    // Ordered by most common usage
+    case aroundTheHouse, exterior, vehicle, hvac, plumbing, electrical
 
     var displayName: String {
         switch self {
+        case .aroundTheHouse: return "Around the House"
         case .hvac: return "HVAC"
         default: return rawValue.capitalized
         }
@@ -20,11 +22,11 @@ enum MaintenanceCategory: String, Codable, CaseIterable {
 
     var iconName: String {
         switch self {
-        case .exterior: return "house.fill"
+        case .aroundTheHouse: return "house.fill"
+        case .exterior: return "leaf.fill"
         case .hvac: return "wind"
         case .electrical: return "bolt.fill"
         case .plumbing: return "drop.fill"
-        case .structural: return "building.2.fill"
         case .vehicle: return "car.fill"
         }
     }
@@ -93,7 +95,7 @@ struct MaintenanceItem: Codable, Identifiable {
     // Recurring fields
     var frequency: MaintenanceFrequency?
     var startDate: Date?
-    var lastCompletedAt: Date?
+    var lastCompletedAt: Date?    // also used for repair completion timestamp
     var requiresScheduling: Bool
     var scheduledDate: Date?
     var contractor: String?
@@ -103,6 +105,7 @@ struct MaintenanceItem: Codable, Identifiable {
     var description: String?
     var estimatedCost: Decimal?
     var actualCost: Decimal?
+    var completeBy: Date?         // deadline for repair completion
 
     // Lifecycle fields
     var installedDate: Date?
@@ -124,6 +127,7 @@ struct MaintenanceItem: Codable, Identifiable {
         case repairStatus = "repair_status"
         case estimatedCost = "estimated_cost"
         case actualCost = "actual_cost"
+        case completeBy = "complete_by"
         case installedDate = "installed_date"
         case expectedLifeYears = "expected_life_years"
     }
@@ -146,6 +150,20 @@ struct MaintenanceItem: Codable, Identifiable {
         let today = Calendar.current.startOfDay(for: Date())
         let in30 = Calendar.current.date(byAdding: .day, value: 30, to: today)!
         return next >= today && next <= in30
+    }
+
+    // MARK: - Computed (Repair)
+
+    var isRepairOverdue: Bool {
+        guard itemType == .repair,
+              repairStatus != .completed,
+              let deadline = completeBy else { return false }
+        return deadline < Calendar.current.startOfDay(for: Date())
+    }
+
+    var repairDaysOverdue: Int {
+        guard isRepairOverdue, let deadline = completeBy else { return 0 }
+        return Calendar.current.dateComponents([.day], from: deadline, to: Date()).day ?? 0
     }
 
     // MARK: - Computed (Lifecycle)

@@ -32,6 +32,7 @@ enum MockMaintenanceData {
         description: String? = nil,
         estimatedCost: Decimal? = nil,
         actualCost: Decimal? = nil,
+        completeBy: Date? = nil,
         // Lifecycle
         installedDate: Date? = nil,
         expectedLifeYears: Int? = nil,
@@ -58,6 +59,7 @@ enum MockMaintenanceData {
             description: description,
             estimatedCost: estimatedCost,
             actualCost: actualCost,
+            completeBy: completeBy,
             installedDate: installedDate,
             expectedLifeYears: expectedLifeYears,
             brand: brand,
@@ -73,20 +75,30 @@ enum MockMaintenanceData {
         let daysFromNow: (Int) -> Date = { cal.date(byAdding: .day, value: $0, to: today)! }
 
         return [
-            // REPAIRS — open
-            make(itemType: .repair, title: "Garage Door Spring", category: .structural,
+            // REPAIRS — overdue (past completeBy)
+            make(itemType: .repair, title: "Garage Door Spring", category: .aroundTheHouse,
                  assignedTo: memberId1,
                  repairStatus: .open, description: "Spring worn, door slow to open",
-                 estimatedCost: 250),
+                 estimatedCost: 250, completeBy: daysAgo(5)),
+
+            // REPAIRS — open with upcoming deadline
+            make(itemType: .repair, title: "Cracked Caulk Around Tub", category: .plumbing,
+                 repairStatus: .open,
+                 description: "Hairline cracks in caulk seal, risk of water intrusion",
+                 estimatedCost: 40, completeBy: daysFromNow(14)),
+
+            // REPAIRS — scheduled
             make(itemType: .repair, title: "Leaking Kitchen Faucet", category: .plumbing,
                  assignedTo: memberId1,
                  scheduledDate: daysFromNow(5), contractor: "Mike's Plumbing",
                  repairStatus: .scheduled, description: "Slow drip from base, getting worse",
-                 estimatedCost: 180),
-            make(itemType: .repair, title: "Cracked Caulk Around Tub", category: .structural,
-                 repairStatus: .open,
-                 description: "Hairline cracks in caulk seal, risk of water intrusion",
-                 estimatedCost: 40),
+                 estimatedCost: 180, completeBy: daysFromNow(10)),
+
+            // REPAIRS — completed in last 30 days
+            make(itemType: .repair, title: "Replace Porch Light Fixture", category: .electrical,
+                 lastCompletedAt: daysAgo(8),
+                 repairStatus: .completed, description: "Old fixture corroded",
+                 estimatedCost: 65, actualCost: 72),
 
             // RECURRING — overdue
             make(itemType: .recurring, title: "Check GFCIs & Breakers", category: .electrical,
@@ -119,6 +131,11 @@ enum MockMaintenanceData {
                  assignedTo: memberId1,
                  frequency: .quarterly, startDate: daysAgo(10),
                  lastCompletedAt: daysAgo(5), requiresScheduling: false),
+
+            // RECURRING — completed in last 30 days
+            make(itemType: .recurring, title: "Change Bed Sheets", category: .aroundTheHouse,
+                 frequency: .weekly, startDate: daysAgo(60),
+                 lastCompletedAt: daysAgo(3), requiresScheduling: false),
 
             // LIFECYCLE
             make(itemType: .lifecycle, title: "Furnace", category: .hvac,

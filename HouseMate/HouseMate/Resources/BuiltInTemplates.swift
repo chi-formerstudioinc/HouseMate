@@ -25,7 +25,7 @@ enum BuiltInTemplates {
         MaintenanceTemplate(builtInName: "Change furnace filter", category: .hvac, intervalDays: 90),
         MaintenanceTemplate(builtInName: "Replace HVAC filter", category: .hvac, intervalDays: 90),
         MaintenanceTemplate(builtInName: "Clean dryer vent", category: .hvac, intervalDays: 365),
-        MaintenanceTemplate(builtInName: "Sweep/blow out garage", category: .structural, intervalDays: 30),
+        MaintenanceTemplate(builtInName: "Sweep/blow out garage", category: .aroundTheHouse, intervalDays: 30),
         MaintenanceTemplate(builtInName: "Test smoke detectors", category: .electrical, intervalDays: 180),
         MaintenanceTemplate(builtInName: "Clean range hood filter", category: .hvac, intervalDays: 90),
         MaintenanceTemplate(builtInName: "Flush water heater", category: .plumbing, intervalDays: 365),

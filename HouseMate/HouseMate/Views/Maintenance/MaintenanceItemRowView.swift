@@ -22,7 +22,7 @@ struct MaintenanceItemRowView: View {
     private var repairRow: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top) {
-                // Status indicator
+                // Status indicator bar
                 RoundedRectangle(cornerRadius: 2)
                     .fill(repairStatusColor)
                     .frame(width: 3)
@@ -55,28 +55,57 @@ struct MaintenanceItemRowView: View {
                             .lineLimit(2)
                     }
 
-                    HStack(spacing: 6) {
-                        categoryChip
-                        if let status = item.repairStatus {
-                            statusChip(status)
-                        }
-                    }
+                    // Category chip only (no status chip — section header already shows status)
+                    categoryChip
 
-                    HStack {
+                    // Due date + cost row
+                    HStack(spacing: 8) {
+                        if let deadline = item.completeBy, item.repairStatus != .completed {
+                            HStack(spacing: 3) {
+                                Image(systemName: "calendar")
+                                    .font(.caption2)
+                                if item.isRepairOverdue {
+                                    Text("\(item.repairDaysOverdue)d overdue")
+                                        .font(.caption)
+                                        .foregroundStyle(.red)
+                                } else {
+                                    Text("By \(deadline.formatted(date: .abbreviated, time: .omitted))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .foregroundStyle(item.isRepairOverdue ? .red : .secondary)
+                        }
                         if let cost = item.estimatedCost {
                             Text("Est: $\(NSDecimalNumber(decimal: cost).intValue)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                        if let contractor = item.contractor, let date = item.scheduledDate {
-                            Text("· \(contractor) · \(date.formatted(date: .abbreviated, time: .omitted))")
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                        }
                         Spacer()
                         if item.repairStatus != .completed {
                             scheduleOrCompleteButton
                         }
+                    }
+
+                    // Scheduled info indicator
+                    if item.repairStatus == .scheduled,
+                       let contractor = item.contractor,
+                       let date = item.scheduledDate {
+                        HStack(spacing: 4) {
+                            Image(systemName: "calendar.badge.checkmark")
+                                .font(.caption2)
+                            Text("\(contractor) · \(date.formatted(date: .abbreviated, time: .omitted))")
+                                .font(.caption)
+                        }
+                        .foregroundStyle(.orange)
+                    } else if item.repairStatus == .scheduled, let date = item.scheduledDate {
+                        HStack(spacing: 4) {
+                            Image(systemName: "calendar.badge.checkmark")
+                                .font(.caption2)
+                            Text("Scheduled \(date.formatted(date: .abbreviated, time: .omitted))")
+                                .font(.caption)
+                        }
+                        .foregroundStyle(.orange)
                     }
                 }
             }
@@ -98,33 +127,25 @@ struct MaintenanceItemRowView: View {
 
     private var repairStatusColor: Color {
         switch item.repairStatus {
-        case .open: return .red
-        case .scheduled: return .orange
+        case .open: return item.isRepairOverdue ? .red : .orange
+        case .scheduled: return .blue
         case .completed: return .green
         case nil: return .gray
         }
     }
 
-    private func statusChip(_ status: RepairStatus) -> some View {
-        Text(status.displayName)
-            .font(.caption2.weight(.medium))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(repairStatusColor.opacity(0.15))
-            .foregroundStyle(repairStatusColor)
-            .clipShape(Capsule())
-    }
-
     private var scheduleOrCompleteButton: some View {
         Group {
             if item.repairStatus == .open {
-                Button("Schedule It", action: onSchedule)
-                    .font(.caption.weight(.medium))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(Color.accentColor)
-                    .foregroundStyle(.white)
-                    .clipShape(Capsule())
+                if item.requiresScheduling || item.scheduledDate == nil {
+                    Button("Schedule It", action: onSchedule)
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color.accentColor)
+                        .foregroundStyle(.white)
+                        .clipShape(Capsule())
+                }
             } else if item.repairStatus == .scheduled {
                 Button("Mark Complete", action: onComplete)
                     .font(.caption.weight(.medium))
@@ -169,13 +190,7 @@ struct MaintenanceItemRowView: View {
                 HStack(spacing: 6) {
                     categoryChip
                     if let freq = item.frequency {
-                        Text(freq.displayName)
-                            .font(.caption2.weight(.medium))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.orange.opacity(0.15))
-                            .foregroundStyle(Color.orange)
-                            .clipShape(Capsule())
+                        frequencyChip(freq)
                     }
                 }
 
@@ -220,6 +235,19 @@ struct MaintenanceItemRowView: View {
                             .clipShape(Capsule())
                             .buttonStyle(.plain)
                     }
+                }
+
+                // Scheduled info for recurring
+                if item.requiresScheduling,
+                   let contractor = item.contractor,
+                   let date = item.scheduledDate {
+                    HStack(spacing: 4) {
+                        Image(systemName: "calendar.badge.checkmark")
+                            .font(.caption2)
+                        Text("\(contractor) · \(date.formatted(date: .abbreviated, time: .omitted))")
+                            .font(.caption)
+                    }
+                    .foregroundStyle(.blue)
                 }
             }
         }
@@ -340,13 +368,28 @@ struct MaintenanceItemRowView: View {
 
     // MARK: - Shared
 
+    /// Category chip using explicit HStack to avoid Label's unpredictable icon spacing
     private var categoryChip: some View {
-        Label(item.category.displayName, systemImage: item.category.iconName)
+        HStack(spacing: 4) {
+            Image(systemName: item.category.iconName)
+                .font(.system(size: 9, weight: .medium))
+            Text(item.category.displayName)
+                .font(.caption2.weight(.medium))
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(Color.secondary.opacity(0.12))
+        .foregroundStyle(.secondary)
+        .clipShape(Capsule())
+    }
+
+    private func frequencyChip(_ freq: MaintenanceFrequency) -> some View {
+        Text(freq.displayName)
             .font(.caption2.weight(.medium))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Color.secondary.opacity(0.12))
-            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Color.orange.opacity(0.15))
+            .foregroundStyle(Color.orange)
             .clipShape(Capsule())
     }
 

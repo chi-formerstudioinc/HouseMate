@@ -25,12 +25,12 @@ struct MaintenanceListView: View {
     @State private var showCompleted = false
     @State private var showLaterSection = false
     @State private var showAddForm = false
-    @State private var showScheduleSheet = false
-    @State private var showCompletionSheet = false
     @State private var itemToSchedule: MaintenanceItem? = nil
     @State private var itemToComplete: MaintenanceItem? = nil
     @State private var itemToEdit: MaintenanceItem? = nil
     @State private var itemToDelete: MaintenanceItem? = nil
+
+    private let thirtyDaysAgo = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
 
     // MARK: - Computed
 
@@ -41,41 +41,49 @@ struct MaintenanceListView: View {
         }
     }
 
-    private var repairs: [MaintenanceItem] {
-        filteredItems.filter { $0.repairStatus != .completed || showCompleted }
+    // Repair sections
+    private var overdueRepairs: [MaintenanceItem] {
+        filteredItems.filter { $0.repairStatus != .completed && $0.isRepairOverdue }
+            .sorted { ($0.completeBy ?? .distantPast) < ($1.completeBy ?? .distantPast) }
+    }
+    private var openRepairs: [MaintenanceItem] {
+        filteredItems.filter { $0.repairStatus == .open && !$0.isRepairOverdue }
+    }
+    private var scheduledRepairs: [MaintenanceItem] {
+        filteredItems.filter { $0.repairStatus == .scheduled && !$0.isRepairOverdue }
+    }
+    private var completedRepairsLast30: [MaintenanceItem] {
+        filteredItems.filter {
+            $0.repairStatus == .completed &&
+            ($0.lastCompletedAt ?? .distantPast) >= thirtyDaysAgo
+        }
+        .sorted { ($0.lastCompletedAt ?? .distantPast) > ($1.lastCompletedAt ?? .distantPast) }
     }
 
-    private var completedRepairs: [MaintenanceItem] {
-        filteredItems.filter { $0.repairStatus == .completed }
-    }
-
+    // Recurring sections
     private var overdueRecurring: [MaintenanceItem] {
         filteredItems.filter { $0.isOverdue }
             .sorted { ($0.nextDueDate ?? .distantFuture) < ($1.nextDueDate ?? .distantFuture) }
     }
-
     private var upcomingRecurring: [MaintenanceItem] {
         filteredItems.filter { $0.isUpcoming }
             .sorted { ($0.nextDueDate ?? .distantFuture) < ($1.nextDueDate ?? .distantFuture) }
     }
-
     private var laterRecurring: [MaintenanceItem] {
-        filteredItems.filter { !$0.isOverdue && !$0.isUpcoming }
+        filteredItems.filter { !$0.isOverdue && !$0.isUpcoming && $0.repairStatus != .completed }
             .sorted { ($0.nextDueDate ?? .distantFuture) < ($1.nextDueDate ?? .distantFuture) }
     }
-
-    private var overdueCount: Int { items.filter { $0.itemType == .recurring && $0.isOverdue }.count }
-    private var openRepairsCount: Int { items.filter { $0.itemType == .repair && $0.repairStatus == .open }.count }
-
-    private var headerSubtitle: String {
-        var parts: [String] = []
-        if overdueCount > 0 { parts.append("\(overdueCount) overdue") }
-        if openRepairsCount > 0 { parts.append("\(openRepairsCount) open repairs") }
-        return parts.joined(separator: " · ")
+    private var completedRecurringLast30: [MaintenanceItem] {
+        filteredItems.filter {
+            ($0.lastCompletedAt ?? .distantPast) >= thirtyDaysAgo &&
+            ($0.nextDueDate == nil || (!$0.isOverdue && !$0.isUpcoming))
+        }
+        .sorted { ($0.lastCompletedAt ?? .distantPast) > ($1.lastCompletedAt ?? .distantPast) }
     }
 
     private var categoriesWithItems: [MaintenanceCategory] {
         let used = Set(items.map(\.category))
+        // Already ordered by MaintenanceCategory.allCases declaration
         return MaintenanceCategory.allCases.filter { used.contains($0) }
     }
 
@@ -84,30 +92,18 @@ struct MaintenanceListView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // Category filter bar
+                // Category filter bar (no show/completed toggle here)
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        categoryChip(nil, label: "All")
+                    HStack(spacing: 6) {
+                        categoryFilterChip(nil, label: "All")
                         ForEach(categoriesWithItems, id: \.self) { cat in
-                            categoryChip(cat, label: cat.displayName)
-                        }
-                        // Show completed toggle
-                        Button {
-                            showCompleted.toggle()
-                        } label: {
-                            Label(showCompleted ? "Hide Completed" : "Show Completed",
-                                  systemImage: showCompleted ? "eye.slash" : "eye")
-                                .font(.caption.weight(.medium))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(showCompleted ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.1))
-                                .foregroundStyle(showCompleted ? Color.accentColor : Color.secondary)
-                                .clipShape(Capsule())
+                            categoryFilterChip(cat, label: cat.displayName)
                         }
                     }
-                    .padding(.horizontal)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 2)
                 }
-                .padding(.vertical, 8)
+                .padding(.vertical, 6)
 
                 // Type tabs
                 Picker("Type", selection: $selectedType) {
@@ -122,12 +118,9 @@ struct MaintenanceListView: View {
                 // List content
                 List {
                     switch selectedType {
-                    case .repair:
-                        repairSection
-                    case .recurring:
-                        recurringSection
-                    case .lifecycle:
-                        lifecycleSection
+                    case .repair:   repairSection
+                    case .recurring: recurringSection
+                    case .lifecycle: lifecycleSection
                     }
                 }
                 .listStyle(.plain)
@@ -167,10 +160,10 @@ struct MaintenanceListView: View {
         .sheet(item: $itemToComplete) { item in
             MaintenanceCompletionSheet(item: item) { actualCost in
                 if let idx = items.firstIndex(where: { $0.id == item.id }) {
+                    items[idx].lastCompletedAt = Date()
                     if item.itemType == .repair {
                         items[idx].repairStatus = .completed
                     } else {
-                        items[idx].lastCompletedAt = Date()
                         items[idx].scheduledDate = nil
                     }
                     if let cost = actualCost { items[idx].actualCost = cost }
@@ -197,26 +190,30 @@ struct MaintenanceListView: View {
 
     @ViewBuilder
     private var repairSection: some View {
-        let open = repairs.filter { $0.repairStatus == .open }
-        let scheduled = repairs.filter { $0.repairStatus == .scheduled }
-        let completed = showCompleted ? completedRepairs : []
-
-        if !open.isEmpty {
-            Section(header: sectionHeader("OPEN", count: open.count, color: .red)) {
-                ForEach(open) { item in rowView(item) }
+        if !overdueRepairs.isEmpty {
+            Section(header: sectionHeader("OVERDUE", count: overdueRepairs.count, color: .red)) {
+                ForEach(overdueRepairs) { item in rowView(item) }
             }
         }
-        if !scheduled.isEmpty {
-            Section(header: sectionHeader("SCHEDULED", count: scheduled.count, color: .orange)) {
-                ForEach(scheduled) { item in rowView(item) }
+        if !openRepairs.isEmpty {
+            Section(header: sectionHeader("OPEN", count: openRepairs.count, color: .orange)) {
+                ForEach(openRepairs) { item in rowView(item) }
             }
         }
-        if !completed.isEmpty {
-            Section(header: sectionHeader("COMPLETED", count: completed.count, color: .green)) {
-                ForEach(completed) { item in rowView(item) }
+        if !scheduledRepairs.isEmpty {
+            Section(header: sectionHeader("SCHEDULED", count: scheduledRepairs.count, color: .blue)) {
+                ForEach(scheduledRepairs) { item in rowView(item) }
             }
         }
-        if open.isEmpty && scheduled.isEmpty {
+        // Completed (last 30 days) — with inline toggle
+        if !completedRepairsLast30.isEmpty || showCompleted {
+            Section(header: completedSectionHeader(count: completedRepairsLast30.count)) {
+                if showCompleted {
+                    ForEach(completedRepairsLast30) { item in rowView(item) }
+                }
+            }
+        }
+        if overdueRepairs.isEmpty && openRepairs.isEmpty && scheduledRepairs.isEmpty {
             emptyState("No repairs", icon: "wrench.and.screwdriver")
         }
     }
@@ -239,6 +236,14 @@ struct MaintenanceListView: View {
             Section(header: laterSectionHeader) {
                 if showLaterSection {
                     ForEach(laterRecurring) { item in rowView(item) }
+                }
+            }
+        }
+        // Completed (last 30 days) — with inline toggle
+        if !completedRecurringLast30.isEmpty || showCompleted {
+            Section(header: completedSectionHeader(count: completedRecurringLast30.count)) {
+                if showCompleted {
+                    ForEach(completedRecurringLast30) { item in rowView(item) }
                 }
             }
         }
@@ -272,17 +277,18 @@ struct MaintenanceListView: View {
             onEdit: { itemToEdit = item },
             onDelete: { itemToDelete = item }
         )
+        .listRowBackground(Color(.systemBackground))
     }
 
     // MARK: - Helpers
 
-    private func categoryChip(_ category: MaintenanceCategory?, label: String) -> some View {
+    private func categoryFilterChip(_ category: MaintenanceCategory?, label: String) -> some View {
         Button {
             selectedCategory = category
         } label: {
             Text(label)
                 .font(.caption.weight(.medium))
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 12)
                 .padding(.vertical, 6)
                 .background(selectedCategory == category ? Color.accentColor : Color.secondary.opacity(0.1))
                 .foregroundStyle(selectedCategory == category ? Color.white : Color.primary)
@@ -301,34 +307,82 @@ struct MaintenanceListView: View {
     }
 
     private func sectionHeader(_ title: String, count: Int, color: Color) -> some View {
-        HStack {
+        HStack(spacing: 6) {
             Circle().fill(color).frame(width: 8, height: 8)
             Text(title)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(color)
-            Text("· \(count)")
+            Text("·")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Text("\(count)")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.primary)
         }
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.systemBackground))
+        .textCase(nil)
+    }
+
+    /// Completed section header with inline show/hide toggle
+    private func completedSectionHeader(count: Int) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(Color.green).frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 4) {
+                    Text("COMPLETED")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.green)
+                    Text("·")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("\(count)")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.primary)
+                }
+                Text("last 30 days")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button {
+                withAnimation { showCompleted.toggle() }
+            } label: {
+                Text(showCompleted ? "Hide" : "Show")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color.accentColor)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.systemBackground))
         .textCase(nil)
     }
 
     private var laterSectionHeader: some View {
         Button {
-            showLaterSection.toggle()
+            withAnimation { showLaterSection.toggle() }
         } label: {
-            HStack {
+            HStack(spacing: 6) {
                 Text("LATER THIS YEAR")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                Text("· \(laterRecurring.count)")
+                Text("·")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Text("\(laterRecurring.count)")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.primary)
                 Spacer()
                 Image(systemName: showLaterSection ? "chevron.up" : "chevron.down")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.systemBackground))
         }
         .textCase(nil)
     }
