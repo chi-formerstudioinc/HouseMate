@@ -46,8 +46,8 @@ All primary keys are `UUID` (PostgreSQL `gen_random_uuid()`). Foreign keys use `
 - `members` — id, household_id, user_id (auth.users), display_name
 - `household_invites` — id, household_id, invite_code (unique), is_active, created_by
 - `bin_schedules` — id, household_id (UNIQUE), pickup_day_of_week, rotation_a, rotation_b, starting_rotation, starting_date, notify_day_before, notify_morning_of, updated_at
-- `maintenance_items` — id, household_id, name, category, interval_days, last_completed_date, notes, template_id, updated_at
-- `maintenance_logs` — id, maintenance_item_id (CASCADE), completed_date, notes, cost
+- `maintenance_items` — id, household_id, item_type (repair|recurring|lifecycle), name, category, interval_days (nullable), last_completed_date, notes, template_id, updated_at
+- `maintenance_logs` — id, maintenance_item_id (CASCADE), completed_by (members, nullable), completed_date, notes, cost (NUMERIC nullable)
 - `maintenance_templates` — id, household_id, name, category, interval_days (user-created only; built-in are bundled in app)
 
 ### Household Invite Flow
@@ -80,56 +80,8 @@ Bin day and maintenance reminders use `UNUserNotificationCenter` (local, per-dev
 | userId | UUID | FK → auth.users |
 | displayName | String | |
 
-### Task
-| Field | Type | Notes |
-|---|---|---|
-| id | UUID | Primary key |
-| householdId | UUID | FK → households |
-| title | String | |
-| category | Enum | Kitchen, Bathroom, Outdoor, Errands, Other |
-| priority | Enum | High, Medium, Low |
-| assignedTo | UUID? | Optional FK → members |
-| dueDate | Date? | Optional |
-| isRecurring | Bool | |
-| recurringInterval | Enum? | Daily, Weekly, Monthly — nil when isRecurring is false |
-| isCompleted | Bool | |
-| completedBy | UUID? | Optional FK → members |
-| completedAt | Date? | Optional |
-| templateId | UUID? | Optional FK → task_templates |
-| updatedAt | Date | |
-
-**Recurring task lifecycle:**
-- A recurring task is stored as a single row. No pre-generated future instances.
-- When completed: (1) insert `task_completion_logs` row, (2) reset `is_completed = false`, (3) advance `due_date` by `recurring_interval`, (4) clear `completed_by` / `completed_at`.
-- If `due_date` is nil when completed, set next due date to `today + recurringInterval`.
-- **Concurrent completion:** The second completion attempt reads `is_completed = false` (already reset) and shows "This task was already completed." No duplicate advancement.
-- When `isRecurring` is toggled off: set `recurring_interval = nil`, leave `due_date` as-is.
-
-### TaskCompletionLog
-| Field | Type | Notes |
-|---|---|---|
-| id | UUID | Primary key |
-| taskId | UUID | FK → tasks (ON DELETE CASCADE) |
-| completedBy | UUID | FK → members |
-| completedAt | Date | |
-
-Task detail shows the last 5 entries ordered by `completedAt` descending.
-
-**Task deletion:** Hard-deletes the `tasks` row; `task_completion_logs` cascade. Alert: "Delete this task? Its completion history will also be deleted." Cancel / Delete.
-
-### TaskTemplate
-| Field | Type | Notes |
-|---|---|---|
-| id | UUID | Primary key |
-| householdId | UUID | FK → households |
-| title | String | |
-| category | Enum | Kitchen, Bathroom, Outdoor, Errands, Other |
-| recurringInterval | Enum? | Optional |
-
-Built-in templates are bundled locally (not in Supabase). User-created templates are stored in `task_templates`.
-
 ### BinSchedule
-**Cardinality:** Exactly one row per household (UNIQUE on household_id). If none exists, Bins tab shows empty state with "Set Up Bin Schedule" button.
+**Cardinality:** Exactly one row per household (UNIQUE on household_id). If none exists, the Bin This Week dashboard card shows an empty state prompting the user to configure the schedule in Settings.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -142,6 +94,7 @@ Built-in templates are bundled locally (not in Supabase). User-created templates
 | startingDate | Date | Known past pickup date — rotation anchor |
 | notifyDayBefore | Bool | |
 | notifyMorningOf | Bool | |
+| updatedAt | Date | |
 
 **Rotation calculation:** `weeksDiff = floor((D - startingDate) / 7)`. Even → startingRotation. Odd → the other. `startingDate` must be past/present. Changing `pickupDayOfWeek` resets `startingDate` to the most recent past occurrence of that day and requires re-confirming `startingRotation`.
 
@@ -150,22 +103,29 @@ Built-in templates are bundled locally (not in Supabase). User-created templates
 |---|---|---|
 | id | UUID | Primary key |
 | householdId | UUID | FK → households |
+| itemType | Enum | repair, recurring, lifecycle |
 | name | String | |
-| category | Enum | Spring, Summer, Fall, Winter, Year-Round |
-| intervalDays | Int | |
+| category | Enum | exterior, hvac, electrical, plumbing, structural, vehicle |
+| intervalDays | Int? | nil for repair type |
 | lastCompletedDate | Date? | nil = never completed |
 | notes | String? | Permanent item-level notes |
 | templateId | UUID? | FK → maintenance_templates |
+| updatedAt | Date | |
 
-**Next due:** `lastCompletedDate + intervalDays`. Nil → treat as overdue.
+**Item types:** `repair` = ad-hoc fix (no interval); `recurring` = scheduled maintenance with a fixed interval; `lifecycle` = long-lived item tracking (e.g. appliance age).
 
-**Color thresholds:** Green = >14 days away. Yellow = ≤14 days (including today). Red = overdue or never completed.
+**Next due:** `lastCompletedDate + intervalDays`. Nil → treat as overdue. Not applicable to repair type.
+
+**Color thresholds:** Green = >14 days away. Yellow = ≤14 days (including today). Red = overdue or never completed. Repairs with no scheduled date show as red.
+
+> Full item type behaviour, frequency enums, and form logic are defined in the Maintenance implementation plan: `docs/superpowers/plans/2026-03-13-housemate-maintenance.md`.
 
 ### MaintenanceLog
 | Field | Type | Notes |
 |---|---|---|
 | id | UUID | Primary key |
 | maintenanceItemId | UUID | FK → maintenance_items (ON DELETE CASCADE) |
+| completedBy | UUID? | Optional FK → members — used for per-member Insights |
 | completedDate | Date | |
 | notes | String? | |
 | cost | Decimal? | |
@@ -174,12 +134,12 @@ Built-in templates are bundled locally (not in Supabase). User-created templates
 | Field | Type | Notes |
 |---|---|---|
 | id | UUID | Primary key |
-| householdId | UUID | FK → households |
+| householdId | UUID? | FK → households — null for built-in (local only) |
 | name | String | |
-| category | Enum | Spring, Summer, Fall, Winter, Year-Round |
+| category | Enum | exterior, hvac, electrical, plumbing, structural, vehicle |
 | intervalDays | Int | |
 
-Built-in maintenance templates are bundled locally. User-created stored in `maintenance_templates`.
+Built-in maintenance templates are bundled locally in the app (no DB rows). User-created templates are stored in `maintenance_templates` with a non-null `household_id`.
 
 ---
 
@@ -226,32 +186,32 @@ Plus a Settings screen accessible via a profile/gear icon in the Home tab naviga
 ### Maintenance Tab
 
 **List view:**
-- Items grouped by seasonal category
+- Items grouped by category (exterior, hvac, electrical, plumbing, structural, vehicle)
 - Each row: name, last done date (or "Never"), next due date, color-coded dot
 - Tap → item detail
 
 **Item detail:**
-- Name, category, interval, next due date, color status
+- Name, item type, category, interval (if applicable), next due date, color status
 - Permanent notes field (editable inline)
 - **Log Completion** → sheet: date (default today), notes, cost
 - Full history log ordered by `completedDate` descending
 - Edit item button
 
 **Add item:**
-- Manual: name, interval, category, last completed date (optional)
+- Manual: item type (repair / recurring / lifecycle), name, category, interval (required for recurring/lifecycle), last completed date (optional)
 - "From Templates" → browse and tap to pre-fill
 
 **Built-in maintenance templates:**
-- Change furnace filter — 90 days — Year-Round
-- Replace HVAC filter — 90 days — Year-Round
-- Clean dryer vent — 365 days — Year-Round
-- Sweep/blow out garage — 30 days — Year-Round
-- Test smoke detectors — 180 days — Year-Round
-- Clean range hood filter — 90 days — Year-Round
-- Flush water heater — 365 days — Year-Round
-- Check window/door seals — 365 days — Fall
-- Clean gutters — 180 days — Spring
-- Winterize outdoor faucets — 365 days — Fall
+- Change furnace filter — 90 days — HVAC
+- Replace HVAC filter — 90 days — HVAC
+- Clean dryer vent — 365 days — HVAC
+- Sweep/blow out garage — 30 days — Exterior
+- Test smoke detectors — 180 days — Electrical
+- Clean range hood filter — 90 days — HVAC
+- Flush water heater — 365 days — Plumbing
+- Check window/door seals — 365 days — Structural
+- Clean gutters — 180 days — Exterior
+- Winterize outdoor faucets — 365 days — Plumbing
 
 **Maintenance notifications:**
 - Local notification fires at 9 AM on item's next due date: "Time to: [item name]"
@@ -268,9 +228,7 @@ Stub in v1 — placeholder screen ("Coming soon").
 - Repair costs and categories over time
 - Maintenance completion rates
 - Per-member breakdowns (who did what)
-- Chore streaks and completion rates (if chore tracking is added in a future phase)
-
-No additional data models required for the stub. The data to power Insights (maintenance logs with costs, completion timestamps, member IDs) is already captured by the Maintenance module.
+No additional data models required for the stub. The data to power most Insights content (maintenance logs with costs, completion timestamps, member attribution) is already captured by the Maintenance module.
 
 ---
 
@@ -292,8 +250,8 @@ No data models or DB tables defined until the Finance phase is planned.
 - Members list with display names
 - **Invite Member** — shows current invite code with copy/share options; **Regenerate Code** button deactivates old code, creates new one
 - **Member removal** — not supported in v1. Help text: "To leave this household, contact your household admin."
-- **Bin Schedule** — configure pickup day of week, rotation A/B labels, starting rotation + date, notification toggles (day before, morning of). Reschedules local notifications on save.
-- Notification preferences: per-type toggles (bin day before, bin day morning, maintenance due)
+- **Bin Schedule** — configure pickup day of week, rotation A/B labels, starting rotation + date, notification toggles (day before at 6 PM, morning of at 7 AM). Reschedules local notifications on save.
+- **Notification preferences** — maintenance due reminder toggle (9 AM on due date)
 - Your display name (editable)
 
 ---
@@ -302,8 +260,6 @@ No data models or DB tables defined until the Finance phase is planned.
 
 | Trigger | Delivery | Recipient |
 |---|---|---|
-| Task completed / created by member | Supabase Realtime (in-app, when app is open) | All members in-app |
-| Task assigned to you | Supabase Realtime (in-app only in v1) | Assigned member (in-app) |
 | Bin day (day before, 6 PM) | Local scheduled (per device) | All members independently |
 | Bin day (morning of, 7 AM) | Local scheduled (per device) | All members independently |
 | Maintenance item due | Local scheduled (9 AM on due date, per device) | All members independently |
@@ -313,11 +269,6 @@ Push notifications (background alerts when app is closed) deferred to a future p
 ---
 
 ## Built-in Template Library
-
-### Task Templates (built-in, local)
-**Weekly:** Take out trash, Vacuum living room, Clean bathrooms, Wipe down kitchen counters, Do laundry, Mop floors
-**Monthly:** Clean fridge, Dust ceiling fans, Wash windows, Deep clean oven
-**Seasonal checklists:** Spring cleaning, Pre-guest prep, Move-in checklist
 
 ### Maintenance Templates
 See Maintenance tab section above.
