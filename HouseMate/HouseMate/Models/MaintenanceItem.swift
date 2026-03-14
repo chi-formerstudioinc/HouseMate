@@ -4,8 +4,16 @@ import Foundation
 // MARK: - Enums
 
 enum MaintenanceItemType: String, Codable, CaseIterable {
-    case repair, recurring, lifecycle
-    var displayName: String { rawValue.capitalized }
+    case chore, repair, maintenance, asset
+
+    var displayName: String {
+        switch self {
+        case .chore: return "Chore"
+        case .repair: return "Repair"
+        case .maintenance: return "Maintenance"
+        case .asset: return "Asset"
+        }
+    }
 }
 
 enum MaintenanceCategory: String, Codable, CaseIterable {
@@ -33,11 +41,12 @@ enum MaintenanceCategory: String, Codable, CaseIterable {
 }
 
 enum MaintenanceFrequency: String, Codable, CaseIterable {
-    case weekly, monthly, quarterly, biAnnual, annual
+    case weekly, biWeekly, monthly, quarterly, biAnnual, annual
 
     var displayName: String {
         switch self {
         case .weekly: return "Weekly"
+        case .biWeekly: return "Bi-Weekly"
         case .monthly: return "Monthly"
         case .quarterly: return "Quarterly"
         case .biAnnual: return "Bi-Annual"
@@ -48,6 +57,7 @@ enum MaintenanceFrequency: String, Codable, CaseIterable {
     var days: Int {
         switch self {
         case .weekly: return 7
+        case .biWeekly: return 14
         case .monthly: return 30
         case .quarterly: return 91
         case .biAnnual: return 182
@@ -70,13 +80,6 @@ enum MaintenanceAgeStatus {
         case .replaceSoon: return "Replace Soon"
         }
     }
-    var color: String {
-        switch self {
-        case .good: return "green"
-        case .watch: return "yellow"
-        case .replaceSoon: return "red"
-        }
-    }
 }
 
 // MARK: - Model
@@ -88,26 +91,26 @@ struct MaintenanceItem: Codable, Identifiable {
     var title: String
     var category: MaintenanceCategory
     var notes: String?
-    var assignedTo: UUID?         // repair + recurring only
+    var assignedTo: UUID?
     let createdAt: Date
     var updatedAt: Date
 
-    // Recurring fields
+    // Recurring / Maintenance / Chore (repeat) fields
     var frequency: MaintenanceFrequency?
     var startDate: Date?
-    var lastCompletedAt: Date?    // also used for repair completion timestamp
+    var lastCompletedAt: Date?
     var requiresScheduling: Bool
     var scheduledDate: Date?
     var contractor: String?
 
-    // Repair fields
+    // Repair / Chore fields
     var repairStatus: RepairStatus?
     var description: String?
     var estimatedCost: Decimal?
     var actualCost: Decimal?
-    var completeBy: Date?         // deadline for repair completion
+    var completeBy: Date?
 
-    // Lifecycle fields
+    // Asset (lifecycle) fields
     var installedDate: Date?
     var expectedLifeYears: Int?
     var brand: String?
@@ -132,21 +135,24 @@ struct MaintenanceItem: Codable, Identifiable {
         case expectedLifeYears = "expected_life_years"
     }
 
-    // MARK: - Computed (Recurring)
+    // MARK: - Computed (Maintenance / Repeating Chore)
 
+    /// nextDueDate: if never completed, first due = startDate itself (not start + frequency)
     var nextDueDate: Date? {
-        guard itemType == .recurring, let freq = frequency else { return nil }
-        let base = lastCompletedAt ?? startDate ?? createdAt
-        return Calendar.current.date(byAdding: .day, value: freq.days, to: base)
+        guard (itemType == .maintenance || itemType == .chore), let freq = frequency else { return nil }
+        if let completed = lastCompletedAt {
+            return Calendar.current.date(byAdding: .day, value: freq.days, to: completed)
+        }
+        return startDate ?? createdAt
     }
 
     var isOverdue: Bool {
-        guard itemType == .recurring, let next = nextDueDate else { return false }
+        guard itemType == .maintenance, let next = nextDueDate else { return false }
         return next < Calendar.current.startOfDay(for: Date())
     }
 
     var isUpcoming: Bool {
-        guard itemType == .recurring, let next = nextDueDate else { return false }
+        guard itemType == .maintenance, let next = nextDueDate else { return false }
         let today = Calendar.current.startOfDay(for: Date())
         let in30 = Calendar.current.date(byAdding: .day, value: 30, to: today)!
         return next >= today && next <= in30
@@ -166,10 +172,35 @@ struct MaintenanceItem: Codable, Identifiable {
         return Calendar.current.dateComponents([.day], from: deadline, to: Date()).day ?? 0
     }
 
-    // MARK: - Computed (Lifecycle)
+    // MARK: - Computed (Chore)
+
+    /// Due date for display: nextDueDate if repeating, completeBy if one-time
+    var choreDueDate: Date? {
+        guard itemType == .chore else { return nil }
+        if frequency != nil { return nextDueDate }
+        return completeBy
+    }
+
+    var isChoreOverdue: Bool {
+        guard itemType == .chore, repairStatus != .completed else { return false }
+        if frequency != nil {
+            guard let next = nextDueDate else { return false }
+            return next < Calendar.current.startOfDay(for: Date())
+        }
+        guard let deadline = completeBy else { return false }
+        return deadline < Calendar.current.startOfDay(for: Date())
+    }
+
+    var choreDaysOverdue: Int {
+        guard isChoreOverdue else { return 0 }
+        let refDate = choreDueDate ?? Date()
+        return Calendar.current.dateComponents([.day], from: refDate, to: Date()).day ?? 0
+    }
+
+    // MARK: - Computed (Asset)
 
     var yearsOld: Double? {
-        guard itemType == .lifecycle, let installed = installedDate else { return nil }
+        guard itemType == .asset, let installed = installedDate else { return nil }
         return Double(Calendar.current.dateComponents([.day], from: installed, to: Date()).day ?? 0) / 365.25
     }
 

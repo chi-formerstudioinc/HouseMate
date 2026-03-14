@@ -11,7 +11,7 @@ struct MainTabView: View {
             Text("Bins")
                 .tabItem { Label("Bins", systemImage: "trash") }
             MaintenanceListView()
-                .tabItem { Label("Maintenance", systemImage: "wrench.and.screwdriver") }
+                .tabItem { Label("Home Care", systemImage: "house.and.flag") }
         }
     }
 }

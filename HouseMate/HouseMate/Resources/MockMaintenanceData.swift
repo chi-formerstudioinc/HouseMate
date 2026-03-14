@@ -20,50 +20,32 @@ enum MockMaintenanceData {
         category: MaintenanceCategory,
         notes: String? = nil,
         assignedTo: UUID? = nil,
-        // Recurring
         frequency: MaintenanceFrequency? = nil,
         startDate: Date? = nil,
         lastCompletedAt: Date? = nil,
         requiresScheduling: Bool = false,
         scheduledDate: Date? = nil,
         contractor: String? = nil,
-        // Repair
         repairStatus: RepairStatus? = nil,
         description: String? = nil,
         estimatedCost: Decimal? = nil,
         actualCost: Decimal? = nil,
         completeBy: Date? = nil,
-        // Lifecycle
         installedDate: Date? = nil,
         expectedLifeYears: Int? = nil,
         brand: String? = nil,
         model: String? = nil
     ) -> MaintenanceItem {
         MaintenanceItem(
-            id: id,
-            householdId: householdId,
-            itemType: itemType,
-            title: title,
-            category: category,
-            notes: notes,
-            assignedTo: assignedTo,
-            createdAt: Date(),
-            updatedAt: Date(),
-            frequency: frequency,
-            startDate: startDate,
-            lastCompletedAt: lastCompletedAt,
-            requiresScheduling: requiresScheduling,
-            scheduledDate: scheduledDate,
-            contractor: contractor,
-            repairStatus: repairStatus,
-            description: description,
-            estimatedCost: estimatedCost,
-            actualCost: actualCost,
-            completeBy: completeBy,
-            installedDate: installedDate,
-            expectedLifeYears: expectedLifeYears,
-            brand: brand,
-            model: model
+            id: id, householdId: householdId, itemType: itemType,
+            title: title, category: category, notes: notes, assignedTo: assignedTo,
+            createdAt: Date(), updatedAt: Date(),
+            frequency: frequency, startDate: startDate, lastCompletedAt: lastCompletedAt,
+            requiresScheduling: requiresScheduling, scheduledDate: scheduledDate, contractor: contractor,
+            repairStatus: repairStatus, description: description,
+            estimatedCost: estimatedCost, actualCost: actualCost, completeBy: completeBy,
+            installedDate: installedDate, expectedLifeYears: expectedLifeYears,
+            brand: brand, model: model
         )
     }
     // swiftlint:enable function_parameter_count
@@ -75,80 +57,90 @@ enum MockMaintenanceData {
         let daysFromNow: (Int) -> Date = { cal.date(byAdding: .day, value: $0, to: today)! }
 
         return [
-            // REPAIRS — overdue (past completeBy)
+            // REPAIRS
             make(itemType: .repair, title: "Garage Door Spring", category: .aroundTheHouse,
-                 assignedTo: memberId1,
-                 repairStatus: .open, description: "Spring worn, door slow to open",
+                 assignedTo: memberId1, repairStatus: .open,
+                 description: "Spring worn, door slow to open",
                  estimatedCost: 250, completeBy: daysAgo(5)),
-
-            // REPAIRS — open with upcoming deadline
             make(itemType: .repair, title: "Cracked Caulk Around Tub", category: .plumbing,
                  repairStatus: .open,
                  description: "Hairline cracks in caulk seal, risk of water intrusion",
                  estimatedCost: 40, completeBy: daysFromNow(14)),
-
-            // REPAIRS — scheduled
             make(itemType: .repair, title: "Leaking Kitchen Faucet", category: .plumbing,
-                 assignedTo: memberId1,
-                 scheduledDate: daysFromNow(5), contractor: "Mike's Plumbing",
+                 assignedTo: memberId1, scheduledDate: daysFromNow(5), contractor: "Mike's Plumbing",
                  repairStatus: .scheduled, description: "Slow drip from base, getting worse",
                  estimatedCost: 180, completeBy: daysFromNow(10)),
-
-            // REPAIRS — completed in last 30 days
             make(itemType: .repair, title: "Replace Porch Light Fixture", category: .electrical,
-                 lastCompletedAt: daysAgo(8),
-                 repairStatus: .completed, description: "Old fixture corroded",
-                 estimatedCost: 65, actualCost: 72),
+                 lastCompletedAt: daysAgo(8), repairStatus: .completed,
+                 description: "Old fixture corroded", estimatedCost: 65, actualCost: 72),
 
-            // RECURRING — overdue
-            make(itemType: .recurring, title: "Check GFCIs & Breakers", category: .electrical,
-                 assignedTo: memberId2,
-                 frequency: .biAnnual, startDate: daysAgo(200),
+            // CHORES — overdue
+            make(itemType: .chore, title: "Return Library Books", category: .aroundTheHouse,
+                 assignedTo: memberId2, repairStatus: .open, completeBy: daysAgo(3)),
+
+            // CHORES — coming up with deadline
+            make(itemType: .chore, title: "Deep Vacuum All Rooms", category: .aroundTheHouse,
+                 assignedTo: memberId1, repairStatus: .open, completeBy: daysFromNow(7)),
+
+            // CHORES — repeating
+            make(itemType: .chore, title: "Change Bed Sheets", category: .aroundTheHouse,
+                 frequency: .biWeekly, startDate: daysAgo(10),
+                 lastCompletedAt: daysAgo(10), repairStatus: .open),
+
+            // CHORES — no date
+            make(itemType: .chore, title: "Organize Garage", category: .aroundTheHouse,
+                 repairStatus: .open),
+
+            // CHORES — completed last 30 days
+            make(itemType: .chore, title: "Clean Oven", category: .aroundTheHouse,
+                 lastCompletedAt: daysAgo(5), repairStatus: .completed),
+
+            // MAINTENANCE — overdue
+            make(itemType: .maintenance, title: "Check GFCIs & Breakers", category: .electrical,
+                 assignedTo: memberId2, frequency: .biAnnual, startDate: daysAgo(200),
                  lastCompletedAt: daysAgo(195), requiresScheduling: false),
-            make(itemType: .recurring, title: "Deep Clean Patio", category: .exterior,
+            make(itemType: .maintenance, title: "Deep Clean Patio", category: .exterior,
                  frequency: .quarterly, startDate: daysAgo(110),
                  lastCompletedAt: daysAgo(105), requiresScheduling: false),
 
-            // RECURRING — upcoming (next 30 days)
-            make(itemType: .recurring, title: "Change HVAC Filter", category: .hvac,
+            // MAINTENANCE — upcoming
+            make(itemType: .maintenance, title: "Change HVAC Filter", category: .hvac,
                  notes: "20×25×1 MERV-8 filter", assignedTo: memberId1,
                  frequency: .quarterly, startDate: daysAgo(85),
                  lastCompletedAt: daysAgo(80), requiresScheduling: false),
-            make(itemType: .recurring, title: "HVAC Tune-up", category: .hvac,
-                 assignedTo: memberId2,
-                 frequency: .annual, startDate: daysAgo(350),
+            make(itemType: .maintenance, title: "HVAC Tune-up", category: .hvac,
+                 assignedTo: memberId2, frequency: .annual, startDate: daysAgo(350),
                  lastCompletedAt: daysAgo(340), requiresScheduling: true,
                  scheduledDate: daysFromNow(14), contractor: "Cool Air HVAC"),
 
-            // RECURRING — later this year
-            make(itemType: .recurring, title: "Inspect Roof & Flashing", category: .exterior,
+            // MAINTENANCE — later this year
+            make(itemType: .maintenance, title: "Inspect Roof & Flashing", category: .exterior,
                  frequency: .annual, startDate: daysAgo(30),
                  lastCompletedAt: daysAgo(25), requiresScheduling: false),
-            make(itemType: .recurring, title: "Flush Outdoor Drains", category: .plumbing,
+            make(itemType: .maintenance, title: "Flush Outdoor Drains", category: .plumbing,
                  frequency: .biAnnual, startDate: daysAgo(20),
                  lastCompletedAt: daysAgo(15), requiresScheduling: false),
-            make(itemType: .recurring, title: "Vehicle Oil Change", category: .vehicle,
-                 assignedTo: memberId1,
-                 frequency: .quarterly, startDate: daysAgo(10),
+            make(itemType: .maintenance, title: "Vehicle Oil Change", category: .vehicle,
+                 assignedTo: memberId1, frequency: .quarterly, startDate: daysAgo(10),
                  lastCompletedAt: daysAgo(5), requiresScheduling: false),
 
-            // RECURRING — completed in last 30 days
-            make(itemType: .recurring, title: "Change Bed Sheets", category: .aroundTheHouse,
-                 frequency: .weekly, startDate: daysAgo(60),
+            // MAINTENANCE — completed last 30 days
+            make(itemType: .maintenance, title: "Replace Smoke Detector Batteries", category: .electrical,
+                 frequency: .annual, startDate: daysAgo(60),
                  lastCompletedAt: daysAgo(3), requiresScheduling: false),
 
-            // LIFECYCLE
-            make(itemType: .lifecycle, title: "Furnace", category: .hvac,
+            // ASSETS
+            make(itemType: .asset, title: "Furnace", category: .hvac,
                  installedDate: cal.date(from: DateComponents(year: 2013, month: 1, day: 1))!,
                  expectedLifeYears: 15, brand: "Carrier", model: "58STA"),
-            make(itemType: .lifecycle, title: "Central AC Unit", category: .hvac,
+            make(itemType: .asset, title: "Central AC Unit", category: .hvac,
                  installedDate: cal.date(from: DateComponents(year: 2015, month: 6, day: 1))!,
                  expectedLifeYears: 15, brand: "Lennox"),
-            make(itemType: .lifecycle, title: "Roof", category: .exterior,
+            make(itemType: .asset, title: "Roof", category: .exterior,
                  notes: "Asphalt shingles",
                  installedDate: cal.date(from: DateComponents(year: 2012, month: 8, day: 1))!,
                  expectedLifeYears: 20),
-            make(itemType: .lifecycle, title: "Water Heater", category: .plumbing,
+            make(itemType: .asset, title: "Water Heater", category: .plumbing,
                  installedDate: cal.date(from: DateComponents(year: 2018, month: 3, day: 1))!,
                  expectedLifeYears: 10, brand: "Rheem"),
         ]

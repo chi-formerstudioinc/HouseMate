@@ -15,7 +15,8 @@ struct MaintenanceCompletionSheet: View {
     }
 
     private var showsCostField: Bool {
-        item.itemType == .repair || (item.itemType == .recurring && item.requiresScheduling)
+        item.itemType == .repair || item.itemType == .chore ||
+        (item.itemType == .maintenance && item.requiresScheduling)
     }
 
     var body: some View {

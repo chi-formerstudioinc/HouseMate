@@ -12,17 +12,20 @@ struct MaintenanceFormView: View {
     @State private var category: MaintenanceCategory = .aroundTheHouse
     @State private var notes = ""
     @State private var assignedTo: UUID? = nil
-    // Recurring
+    // Shared scheduling
+    @State private var requiresScheduling = false
+    @State private var scheduledDate = Date()
+    @State private var contractor = ""
+    @State private var estimatedCostText = ""
+    // Repair / Chore
+    @State private var repairDescription = ""
+    @State private var completeBy: Date = Calendar.current.date(byAdding: .day, value: 14, to: Date())!
+    // Chore repeat
+    @State private var choreFrequency: MaintenanceFrequency? = nil
+    // Maintenance
     @State private var frequency: MaintenanceFrequency = .monthly
     @State private var startDate = Date()
-    @State private var requiresScheduling = false
-    // Repair
-    @State private var repairDescription = ""
-    @State private var estimatedCostText = ""
-    @State private var completeBy: Date? = nil
-    @State private var showCompleteByPicker = false
-    @State private var repairRequiresScheduling = false
-    // Lifecycle
+    // Asset
     @State private var installedDate = Calendar.current.date(byAdding: .year, value: -1, to: Date())!
     @State private var expectedLifeYears = "10"
     @State private var brand = ""
@@ -31,8 +34,9 @@ struct MaintenanceFormView: View {
     private let editingItem: MaintenanceItem?
     private var isEditing: Bool { editingItem != nil }
 
-    // Suggestions per category — for recurring tasks
-    private let recurringCategorySuggestions: [MaintenanceCategory: [String]] = [
+    private let taskTypes: [MaintenanceItemType] = [.chore, .repair, .maintenance]
+
+    private let maintenanceCategorySuggestions: [MaintenanceCategory: [String]] = [
         .aroundTheHouse: ["Change Bed Sheets", "Clean Bathrooms", "Dust the House", "Deep Vacuum", "Return Items"],
         .hvac: ["Change HVAC Filter", "HVAC Tune-up", "Inspect Ducts", "Clean Vents"],
         .exterior: ["Clean Gutters", "Inspect Roof", "Power Wash Driveway", "Check Caulking"],
@@ -40,11 +44,12 @@ struct MaintenanceFormView: View {
         .plumbing: ["Check Water Heater", "Snake Drain", "Inspect Supply Lines"],
         .vehicle: ["Oil Change", "Tire Rotation", "Check Brakes", "Annual Service"],
     ]
-
-    // Suggestions for repair tasks
-    private let repairSuggestions: [String] = [
-        "Fix Leaking Pipe", "Repair Broken Window", "Replace Damaged Tile",
-        "Patch Drywall Hole", "Fix Stuck Door"
+    private let repairSuggestions = ["Fix Leaking Pipe", "Repair Broken Window", "Replace Damaged Tile",
+                                      "Patch Drywall Hole", "Fix Stuck Door"]
+    private let choreSuggestions: [MaintenanceCategory: [String]] = [
+        .aroundTheHouse: ["Return Items", "Deep Vacuum", "Organize Pantry", "Clear Junk Mail", "Donate Old Clothes"],
+        .exterior: ["Mow Lawn", "Weed Garden", "Clean Garage"],
+        .vehicle: ["Clean Car Interior", "Wash Car"],
     ]
 
     init(members: [Member], initialType: MaintenanceItemType = .repair,
@@ -58,18 +63,19 @@ struct MaintenanceFormView: View {
             _category = State(initialValue: item.category)
             _notes = State(initialValue: item.notes ?? "")
             _assignedTo = State(initialValue: item.assignedTo)
+            _requiresScheduling = State(initialValue: item.requiresScheduling)
+            _choreFrequency = State(initialValue: item.itemType == .chore ? item.frequency : nil)
             _frequency = State(initialValue: item.frequency ?? .monthly)
             _startDate = State(initialValue: item.startDate ?? Date())
-            _requiresScheduling = State(initialValue: item.requiresScheduling)
             _repairDescription = State(initialValue: item.description ?? "")
             _estimatedCostText = State(initialValue: item.estimatedCost.map {
                 let val = NSDecimalNumber(decimal: $0).doubleValue
                 return val.truncatingRemainder(dividingBy: 1) == 0
                     ? String(Int(val)) : String(format: "%.2f", val)
             } ?? "")
-            _completeBy = State(initialValue: item.completeBy)
-            _showCompleteByPicker = State(initialValue: item.completeBy != nil)
-            _repairRequiresScheduling = State(initialValue: item.requiresScheduling)
+            _completeBy = State(initialValue: item.completeBy ?? Calendar.current.date(byAdding: .day, value: 14, to: Date())!)
+            _contractor = State(initialValue: item.contractor ?? "")
+            _scheduledDate = State(initialValue: item.scheduledDate ?? Date())
             _installedDate = State(initialValue: item.installedDate ?? Calendar.current.date(byAdding: .year, value: -1, to: Date())!)
             _expectedLifeYears = State(initialValue: item.expectedLifeYears.map { "\($0)" } ?? "10")
             _brand = State(initialValue: item.brand ?? "")
@@ -82,8 +88,8 @@ struct MaintenanceFormView: View {
     var body: some View {
         NavigationStack {
             Form {
-                // Type selector (only on create)
-                if !isEditing {
+                // Type selector (create only, task types)
+                if !isEditing && itemType != .asset {
                     Section {
                         typeSelectorCards
                     }
@@ -91,10 +97,12 @@ struct MaintenanceFormView: View {
                     .listRowBackground(Color.clear)
                 }
 
-                // Task title
+                // Title
                 Section {
                     TextField(titlePlaceholder, text: $title)
-                    // Suggestions
+                        .onChange(of: title) { _, new in
+                            if new.count > 40 { title = String(new.prefix(40)) }
+                        }
                     if !isEditing {
                         let suggestions = currentSuggestions
                         if !suggestions.isEmpty {
@@ -114,9 +122,7 @@ struct MaintenanceFormView: View {
                             }
                         }
                     }
-                } header: {
-                    Text("Task")
-                }
+                } header: { Text(taskFieldLabel) }
 
                 // Category
                 Section("Category") {
@@ -127,81 +133,30 @@ struct MaintenanceFormView: View {
                     }
                 }
 
-                // Assign To (repair + recurring only)
-                if itemType != .lifecycle {
-                    Section("Assign To") {
+                // Assign To (not for assets)
+                if itemType != .asset {
+                    Section {
                         Picker("Assign to", selection: $assignedTo) {
                             Text("Unassigned").tag(Optional<UUID>.none)
-                            ForEach(members) { member in
-                                Text(member.displayName).tag(Optional(member.id))
+                            ForEach(members) { m in
+                                Text(m.displayName).tag(Optional(m.id))
                             }
                         }
-                    }
+                    } header: { optionalHeader("Assign To") }
                 }
 
                 // Type-specific fields
                 switch itemType {
-                case .repair:
-                    Section("Details") {
-                        TextField("Description (optional)", text: $repairDescription, axis: .vertical)
-                            .lineLimit(3, reservesSpace: false)
-                        costField
-                    }
-
-                    Section("Scheduling") {
-                        Toggle("Requires scheduling", isOn: $repairRequiresScheduling)
-
-                        // Complete By date
-                        Toggle("Set complete by date", isOn: Binding(
-                            get: { showCompleteByPicker },
-                            set: {
-                                showCompleteByPicker = $0
-                                if !$0 { completeBy = nil }
-                                else if completeBy == nil { completeBy = Calendar.current.date(byAdding: .day, value: 14, to: Date()) }
-                            }
-                        ))
-                        if showCompleteByPicker {
-                            datePicker("Complete by", selection: Binding(
-                                get: { completeBy ?? Date() },
-                                set: { completeBy = $0 }
-                            ))
-                        }
-                    }
-
-                case .recurring:
-                    Section("Schedule") {
-                        Picker("Frequency", selection: $frequency) {
-                            ForEach(MaintenanceFrequency.allCases, id: \.self) {
-                                Text($0.displayName).tag($0)
-                            }
-                        }
-                        datePicker("Start date", selection: $startDate)
-                        Toggle("Requires scheduling", isOn: $requiresScheduling)
-                    }
-                    Section("Notes") {
-                        TextField("Notes (optional)", text: $notes, axis: .vertical)
-                            .lineLimit(3, reservesSpace: false)
-                    }
-
-                case .lifecycle:
-                    Section("Appliance Details") {
-                        datePicker("Installation date", selection: $installedDate)
-                        TextField("Expected life (years)", text: $expectedLifeYears)
-                            .keyboardType(.numberPad)
-                        TextField("Brand (optional)", text: $brand)
-                        TextField("Model (optional)", text: $model)
-                    }
-                    Section("Notes") {
-                        TextField("Notes (optional)", text: $notes, axis: .vertical)
-                            .lineLimit(3, reservesSpace: false)
-                    }
+                case .chore:    choreFields
+                case .repair:   repairFields
+                case .maintenance: maintenanceFields
+                case .asset:    assetFields
                 }
             }
             .navigationTitle(isEditing ? "Edit" : "Add")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { save() }
-                        .disabled(!canSave)
+                    Button("Save") { save() }.disabled(!canSave)
                 }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -210,7 +165,109 @@ struct MaintenanceFormView: View {
         }
     }
 
-    // MARK: - Reusable date picker with Today shortcut
+    // MARK: - Chore fields
+
+    @ViewBuilder
+    private var choreFields: some View {
+        Section {
+            Picker("Repeat", selection: $choreFrequency) {
+                Text("Never").tag(Optional<MaintenanceFrequency>.none)
+                ForEach(MaintenanceFrequency.allCases, id: \.self) {
+                    Text($0.displayName).tag(Optional($0))
+                }
+            }
+        } header: { optionalHeader("Repeat") }
+
+        Section {
+            datePicker("Complete by", selection: $completeBy)
+        } header: { optionalHeader("Due Date") }
+
+        Section {
+            Toggle("Requires scheduling", isOn: $requiresScheduling)
+            if requiresScheduling {
+                TextField("Contractor", text: $contractor)
+                costField
+                datePicker("Scheduled date", selection: $scheduledDate)
+            }
+        } header: { optionalHeader("Schedule") }
+
+        Section {
+            TextField("Notes", text: $notes, axis: .vertical)
+                .lineLimit(3, reservesSpace: false)
+        } header: { optionalHeader("Notes") }
+    }
+
+    // MARK: - Repair fields
+
+    @ViewBuilder
+    private var repairFields: some View {
+        Section("Details") {
+            TextField("Description", text: $repairDescription, axis: .vertical)
+                .lineLimit(3, reservesSpace: false)
+            costField
+        }
+
+        Section {
+            datePicker("Complete by", selection: $completeBy)
+            Toggle("Requires scheduling", isOn: $requiresScheduling)
+            if requiresScheduling {
+                TextField("Contractor", text: $contractor)
+                datePicker("Scheduled date", selection: $scheduledDate)
+            }
+        } header: { optionalHeader("Schedule") }
+    }
+
+    // MARK: - Maintenance fields
+
+    @ViewBuilder
+    private var maintenanceFields: some View {
+        Section("Schedule") {
+            Picker("Repeat", selection: $frequency) {
+                ForEach(MaintenanceFrequency.allCases, id: \.self) {
+                    Text($0.displayName).tag($0)
+                }
+            }
+            datePicker("Start date", selection: $startDate)
+            Toggle("Requires scheduling", isOn: $requiresScheduling)
+            if requiresScheduling {
+                TextField("Contractor", text: $contractor)
+                costField
+                datePicker("Scheduled date", selection: $scheduledDate)
+            }
+        }
+        Section {
+            TextField("Notes", text: $notes, axis: .vertical)
+                .lineLimit(3, reservesSpace: false)
+        } header: { optionalHeader("Notes") }
+    }
+
+    // MARK: - Asset fields
+
+    @ViewBuilder
+    private var assetFields: some View {
+        Section("Appliance Details") {
+            datePicker("Installation date", selection: $installedDate)
+            TextField("Expected life (years)", text: $expectedLifeYears)
+                .keyboardType(.numberPad)
+            TextField("Brand", text: $brand)
+            TextField("Model", text: $model)
+        }
+        Section {
+            TextField("Notes", text: $notes, axis: .vertical)
+                .lineLimit(3, reservesSpace: false)
+        } header: { optionalHeader("Notes") }
+    }
+
+    // MARK: - Helpers
+
+    private func optionalHeader(_ label: String) -> some View {
+        HStack(spacing: 4) {
+            Text(label)
+            Text("· optional")
+                .foregroundStyle(.secondary)
+                .fontWeight(.regular)
+        }
+    }
 
     private func datePicker(_ label: String, selection: Binding<Date>) -> some View {
         HStack {
@@ -224,16 +281,12 @@ struct MaintenanceFormView: View {
         }
     }
 
-    // MARK: - Currency cost field
-
     private var costField: some View {
         HStack(spacing: 4) {
-            Text("$")
-                .foregroundStyle(.secondary)
+            Text("$").foregroundStyle(.secondary)
             TextField("0", text: $estimatedCostText)
                 .keyboardType(.decimalPad)
                 .onChange(of: estimatedCostText) { _, newVal in
-                    // Allow only digits and one decimal point
                     let filtered = newVal.filter { $0.isNumber || $0 == "." }
                     let parts = filtered.components(separatedBy: ".")
                     if parts.count > 2 {
@@ -245,11 +298,9 @@ struct MaintenanceFormView: View {
         }
     }
 
-    // MARK: - Type selector cards
-
     private var typeSelectorCards: some View {
         HStack(spacing: 8) {
-            ForEach(MaintenanceItemType.allCases, id: \.self) { type in
+            ForEach(taskTypes, id: \.self) { type in
                 Button { itemType = type } label: {
                     VStack(spacing: 6) {
                         Image(systemName: typeIcon(type))
@@ -274,39 +325,52 @@ struct MaintenanceFormView: View {
         .padding()
     }
 
-    // MARK: - Helpers
+    private var taskFieldLabel: String {
+        switch itemType {
+        case .chore: return "Chore"
+        case .repair: return "Repair Task"
+        case .maintenance: return "Recurring Task"
+        case .asset: return "Appliance"
+        }
+    }
 
     private var titlePlaceholder: String {
         switch itemType {
+        case .chore: return "e.g. Return library books"
         case .repair: return "e.g. Fix leaking pipe"
-        case .recurring: return "e.g. Change bed sheets"
-        case .lifecycle: return "e.g. Furnace"
+        case .maintenance: return "e.g. Change HVAC filter"
+        case .asset: return "e.g. Furnace"
         }
     }
 
     private var currentSuggestions: [String] {
         switch itemType {
+        case .chore: return choreSuggestions[category] ?? []
         case .repair: return repairSuggestions
-        case .recurring: return recurringCategorySuggestions[category] ?? []
-        case .lifecycle: return []
+        case .maintenance: return maintenanceCategorySuggestions[category] ?? []
+        case .asset: return []
         }
     }
 
     private func typeIcon(_ type: MaintenanceItemType) -> String {
         switch type {
+        case .chore: return "checkmark.circle"
         case .repair: return "wrench.fill"
-        case .recurring: return "arrow.clockwise"
-        case .lifecycle: return "clock.fill"
+        case .maintenance: return "arrow.clockwise"
+        case .asset: return "clock.fill"
         }
     }
 
     private func typeSubtitle(_ type: MaintenanceItemType) -> String {
         switch type {
+        case .chore: return "Tasks & to-dos"
         case .repair: return "Issues & fixes"
-        case .recurring: return "Regular schedules"
-        case .lifecycle: return "Track appliance age"
+        case .maintenance: return "Regular schedules"
+        case .asset: return "Track appliances"
         }
     }
+
+    // MARK: - Save
 
     private func save() {
         let trimmed = title.trimmingCharacters(in: .whitespaces)
@@ -317,27 +381,44 @@ struct MaintenanceFormView: View {
             createdAt: Date(), updatedAt: Date(),
             frequency: nil, startDate: nil, lastCompletedAt: nil,
             requiresScheduling: false, scheduledDate: nil, contractor: nil,
-            repairStatus: itemType == .repair ? .open : nil,
+            repairStatus: (itemType == .repair || itemType == .chore) ? .open : nil,
             description: nil, estimatedCost: nil, actualCost: nil, completeBy: nil,
             installedDate: nil, expectedLifeYears: nil, brand: nil, model: nil
         )
         item.title = trimmed
         item.category = category
-        item.assignedTo = itemType == .lifecycle ? nil : assignedTo
         item.notes = notes.isEmpty ? nil : notes
+        item.assignedTo = itemType == .asset ? nil : assignedTo
 
         switch itemType {
+        case .chore:
+            item.repairStatus = editingItem?.repairStatus ?? .open
+            item.frequency = choreFrequency
+            item.startDate = choreFrequency != nil ? startDate : nil
+            item.completeBy = choreFrequency == nil ? completeBy : nil
+            item.requiresScheduling = requiresScheduling
+            item.contractor = requiresScheduling && !contractor.isEmpty ? contractor : nil
+            item.estimatedCost = requiresScheduling ? Double(estimatedCostText).map { Decimal($0) } : nil
+            item.scheduledDate = requiresScheduling ? scheduledDate : nil
+
         case .repair:
             item.description = repairDescription.isEmpty ? nil : repairDescription
-            item.requiresScheduling = repairRequiresScheduling
-            item.completeBy = completeBy
             item.estimatedCost = Double(estimatedCostText).map { Decimal($0) }
+            item.completeBy = completeBy
+            item.requiresScheduling = requiresScheduling
+            item.contractor = requiresScheduling && !contractor.isEmpty ? contractor : nil
+            item.scheduledDate = requiresScheduling ? scheduledDate : nil
             if editingItem == nil { item.repairStatus = .open }
-        case .recurring:
+
+        case .maintenance:
             item.frequency = frequency
             item.startDate = startDate
             item.requiresScheduling = requiresScheduling
-        case .lifecycle:
+            item.contractor = requiresScheduling && !contractor.isEmpty ? contractor : nil
+            item.estimatedCost = requiresScheduling ? Double(estimatedCostText).map { Decimal($0) } : nil
+            item.scheduledDate = requiresScheduling ? scheduledDate : nil
+
+        case .asset:
             item.installedDate = installedDate
             item.expectedLifeYears = Int(expectedLifeYears)
             item.brand = brand.isEmpty ? nil : brand

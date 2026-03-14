@@ -1,10 +1,30 @@
 // HouseMate/Views/Maintenance/MaintenanceListView.swift
+// HomeCareView — renamed from MaintenanceListView
 import SwiftUI
+
+// MARK: - Tab types (AppStorage-compatible)
+
+enum HomeCareTab: String { case tasks, assets }
+enum HomeCareTaskType: String { case chore, repair, maintenance
+    var displayName: String {
+        switch self {
+        case .chore: return "Chores"
+        case .repair: return "Repairs"
+        case .maintenance: return "Maintenance"
+        }
+    }
+    var itemType: MaintenanceItemType {
+        switch self {
+        case .chore: return .chore
+        case .repair: return .repair
+        case .maintenance: return .maintenance
+        }
+    }
+}
 
 struct MaintenanceListView: View {
     @Environment(AppState.self) private var appState
 
-    // For mock UI — will be replaced with real ViewModel later
     @State private var items: [MaintenanceItem] = {
         #if DEBUG
         return MockMaintenanceData.items
@@ -20,70 +40,112 @@ struct MaintenanceListView: View {
         #endif
     }()
 
-    @State private var selectedType: MaintenanceItemType = .repair
+    // Persistent tab state
+    @AppStorage("homeCareTab") private var activeTabRaw: String = HomeCareTab.tasks.rawValue
+    @AppStorage("homeCareTaskType") private var taskTypeRaw: String = HomeCareTaskType.chore.rawValue
+
+    private var activeTab: HomeCareTab {
+        get { HomeCareTab(rawValue: activeTabRaw) ?? .tasks }
+        set { activeTabRaw = newValue.rawValue }
+    }
+    private var taskType: HomeCareTaskType {
+        get { HomeCareTaskType(rawValue: taskTypeRaw) ?? .chore }
+        set { taskTypeRaw = newValue.rawValue }
+    }
+
     @State private var selectedCategory: MaintenanceCategory? = nil
     @State private var showCompleted = false
     @State private var showLaterSection = false
     @State private var showAddForm = false
+    @State private var itemToEdit: MaintenanceItem? = nil
     @State private var itemToSchedule: MaintenanceItem? = nil
     @State private var itemToComplete: MaintenanceItem? = nil
-    @State private var itemToEdit: MaintenanceItem? = nil
-    @State private var itemToDelete: MaintenanceItem? = nil
+    @State private var recentlyDeleted: MaintenanceItem? = nil
+    @State private var showUndoToast = false
 
     private let thirtyDaysAgo = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
 
-    // MARK: - Computed
+    // MARK: - Filtered items
 
-    private var filteredItems: [MaintenanceItem] {
-        items.filter { item in
-            item.itemType == selectedType &&
-            (selectedCategory == nil || item.category == selectedCategory)
+    private var filteredTasks: [MaintenanceItem] {
+        items.filter {
+            $0.itemType == taskType.itemType &&
+            (selectedCategory == nil || $0.category == selectedCategory)
         }
     }
 
-    // Repair sections
-    private var overdueRepairs: [MaintenanceItem] {
-        filteredItems.filter { $0.repairStatus != .completed && $0.isRepairOverdue }
-            .sorted { ($0.completeBy ?? .distantPast) < ($1.completeBy ?? .distantPast) }
+    private var filteredAssets: [MaintenanceItem] {
+        items.filter {
+            $0.itemType == .asset &&
+            (selectedCategory == nil || $0.category == selectedCategory)
+        }
     }
-    private var openRepairs: [MaintenanceItem] {
-        filteredItems.filter { $0.repairStatus == .open && !$0.isRepairOverdue }
+
+    // Chore sections
+    private var overdueChores: [MaintenanceItem] {
+        filteredTasks.filter { $0.isChoreOverdue }
+            .sorted { ($0.choreDueDate ?? .distantFuture) < ($1.choreDueDate ?? .distantFuture) }
     }
-    private var scheduledRepairs: [MaintenanceItem] {
-        filteredItems.filter { $0.repairStatus == .scheduled && !$0.isRepairOverdue }
+    private var comingUpChores: [MaintenanceItem] {
+        filteredTasks.filter { !$0.isChoreOverdue && $0.repairStatus != .completed }
+            .sorted {
+                let a = $0.choreDueDate ?? .distantFuture
+                let b = $1.choreDueDate ?? .distantFuture
+                return a < b
+            }
     }
-    private var completedRepairsLast30: [MaintenanceItem] {
-        filteredItems.filter {
+    private var completedChoresLast30: [MaintenanceItem] {
+        filteredTasks.filter {
             $0.repairStatus == .completed &&
             ($0.lastCompletedAt ?? .distantPast) >= thirtyDaysAgo
         }
         .sorted { ($0.lastCompletedAt ?? .distantPast) > ($1.lastCompletedAt ?? .distantPast) }
     }
 
-    // Recurring sections
+    // Repair sections
+    private var overdueRepairs: [MaintenanceItem] {
+        filteredTasks.filter { $0.repairStatus != .completed && $0.isRepairOverdue }
+            .sorted { ($0.completeBy ?? .distantPast) < ($1.completeBy ?? .distantPast) }
+    }
+    private var openRepairs: [MaintenanceItem] {
+        filteredTasks.filter { $0.repairStatus == .open && !$0.isRepairOverdue }
+    }
+    private var scheduledRepairs: [MaintenanceItem] {
+        filteredTasks.filter { $0.repairStatus == .scheduled && !$0.isRepairOverdue }
+    }
+    private var completedRepairsLast30: [MaintenanceItem] {
+        filteredTasks.filter {
+            $0.repairStatus == .completed &&
+            ($0.lastCompletedAt ?? .distantPast) >= thirtyDaysAgo
+        }
+        .sorted { ($0.lastCompletedAt ?? .distantPast) > ($1.lastCompletedAt ?? .distantPast) }
+    }
+
+    // Maintenance sections
     private var overdueRecurring: [MaintenanceItem] {
-        filteredItems.filter { $0.isOverdue }
+        filteredTasks.filter { $0.isOverdue }
             .sorted { ($0.nextDueDate ?? .distantFuture) < ($1.nextDueDate ?? .distantFuture) }
     }
     private var upcomingRecurring: [MaintenanceItem] {
-        filteredItems.filter { $0.isUpcoming }
+        filteredTasks.filter { $0.isUpcoming }
             .sorted { ($0.nextDueDate ?? .distantFuture) < ($1.nextDueDate ?? .distantFuture) }
     }
     private var laterRecurring: [MaintenanceItem] {
-        filteredItems.filter { !$0.isOverdue && !$0.isUpcoming && $0.repairStatus != .completed }
+        filteredTasks.filter { !$0.isOverdue && !$0.isUpcoming }
             .sorted { ($0.nextDueDate ?? .distantFuture) < ($1.nextDueDate ?? .distantFuture) }
     }
-    private var completedRecurringLast30: [MaintenanceItem] {
-        filteredItems.filter {
-            ($0.lastCompletedAt ?? .distantPast) >= thirtyDaysAgo &&
-            ($0.nextDueDate == nil || (!$0.isOverdue && !$0.isUpcoming))
+    private var completedMaintenanceLast30: [MaintenanceItem] {
+        items.filter {
+            $0.itemType == .maintenance &&
+            (selectedCategory == nil || $0.category == selectedCategory) &&
+            ($0.lastCompletedAt ?? .distantPast) >= thirtyDaysAgo
         }
         .sorted { ($0.lastCompletedAt ?? .distantPast) > ($1.lastCompletedAt ?? .distantPast) }
     }
 
     private var categoriesWithItems: [MaintenanceCategory] {
-        let used = Set(items.map(\.category))
-        // Already ordered by MaintenanceCategory.allCases declaration
+        let typeFilter: MaintenanceItemType = activeTab == .assets ? .asset : taskType.itemType
+        let used = Set(items.filter { $0.itemType == typeFilter }.map(\.category))
         return MaintenanceCategory.allCases.filter { used.contains($0) }
     }
 
@@ -92,40 +154,48 @@ struct MaintenanceListView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // Category filter bar (no show/completed toggle here)
+                // Underline Tasks | Assets tab switcher
+                underlineTabBar
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+                    .padding(.bottom, 4)
+
+                Divider()
+
+                // Category filter
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
-                        categoryFilterChip(nil, label: "All")
+                        categoryChip(nil, label: "All")
                         ForEach(categoriesWithItems, id: \.self) { cat in
-                            categoryFilterChip(cat, label: cat.displayName)
+                            categoryChip(cat, label: cat.displayName)
                         }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 2)
+                    .padding(.horizontal, 16).padding(.vertical, 2)
                 }
                 .padding(.vertical, 6)
 
-                // Type tabs
-                Picker("Type", selection: $selectedType) {
-                    ForEach(MaintenanceItemType.allCases, id: \.self) { type in
-                        Text(tabLabel(type)).tag(type)
-                    }
+                // Task sub-tabs (only in Tasks view)
+                if activeTab == .tasks {
+                    taskTypeChips
+                        .padding(.bottom, 6)
                 }
-                .pickerStyle(.segmented)
-                .padding(.horizontal)
-                .padding(.bottom, 8)
 
-                // List content
+                // Content
                 List {
-                    switch selectedType {
-                    case .repair:   repairSection
-                    case .recurring: recurringSection
-                    case .lifecycle: lifecycleSection
+                    switch activeTab {
+                    case .tasks:
+                        switch taskType {
+                        case .chore:       choresSection
+                        case .repair:      repairsSection
+                        case .maintenance: maintenanceSection
+                        }
+                    case .assets:
+                        assetsSection
                     }
                 }
                 .listStyle(.plain)
             }
-            .navigationTitle("Maintenance")
+            .navigationTitle("Home Care")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -136,7 +206,8 @@ struct MaintenanceListView: View {
             }
         }
         .sheet(isPresented: $showAddForm) {
-            MaintenanceFormView(members: members, initialType: selectedType) { newItem in
+            let initialType: MaintenanceItemType = activeTab == .assets ? .asset : taskType.itemType
+            MaintenanceFormView(members: members, initialType: initialType) { newItem in
                 items.append(newItem)
             }
         }
@@ -161,7 +232,7 @@ struct MaintenanceListView: View {
             MaintenanceCompletionSheet(item: item) { actualCost in
                 if let idx = items.firstIndex(where: { $0.id == item.id }) {
                     items[idx].lastCompletedAt = Date()
-                    if item.itemType == .repair {
+                    if item.itemType == .repair || item.itemType == .chore {
                         items[idx].repairStatus = .completed
                     } else {
                         items[idx].scheduledDate = nil
@@ -170,26 +241,103 @@ struct MaintenanceListView: View {
                 }
             }
         }
-        .alert("Delete?", isPresented: Binding(
-            get: { itemToDelete != nil },
-            set: { if !$0 { itemToDelete = nil } }
-        )) {
-            Button("Delete", role: .destructive) {
-                if let item = itemToDelete {
-                    items.removeAll { $0.id == item.id }
-                    itemToDelete = nil
-                }
-            }
-            Button("Cancel", role: .cancel) { itemToDelete = nil }
-        } message: {
-            Text("This cannot be undone.")
+        .overlay(alignment: .bottom) {
+            undoToast
         }
     }
 
-    // MARK: - Repair Section
+    // MARK: - Underline tab bar
+
+    private var underlineTabBar: some View {
+        HStack(spacing: 0) {
+            ForEach([HomeCareTab.tasks, .assets], id: \.rawValue) { tab in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { activeTabRaw = tab.rawValue }
+                    selectedCategory = nil
+                } label: {
+                    VStack(spacing: 6) {
+                        Text(tab == .tasks ? "Tasks" : "Assets")
+                            .font(.body.weight(activeTab == tab ? .semibold : .regular))
+                            .foregroundStyle(activeTab == tab ? Color.primary : Color.secondary)
+                        Rectangle()
+                            .fill(activeTab == tab ? Color.accentColor : Color.clear)
+                            .frame(height: 2)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    // MARK: - Task type chips
+
+    private var taskTypeChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach([HomeCareTaskType.chore, .repair, .maintenance], id: \.rawValue) { type in
+                    Button {
+                        withAnimation { taskTypeRaw = type.rawValue }
+                        selectedCategory = nil
+                        showCompleted = false
+                    } label: {
+                        Text(chipLabel(type))
+                            .font(.caption.weight(.medium))
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(taskType == type ? Color.accentColor : Color.secondary.opacity(0.1))
+                            .foregroundStyle(taskType == type ? .white : Color.primary)
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+    }
+
+    private func chipLabel(_ type: HomeCareTaskType) -> String {
+        let count: Int
+        switch type {
+        case .chore:
+            count = items.filter { $0.itemType == .chore && $0.repairStatus != .completed }.count
+        case .repair:
+            count = items.filter { $0.itemType == .repair && $0.repairStatus != .completed }.count
+        case .maintenance:
+            count = items.filter { $0.itemType == .maintenance }.count
+        }
+        return "\(type.displayName) \(count)"
+    }
+
+    // MARK: - Chores section
 
     @ViewBuilder
-    private var repairSection: some View {
+    private var choresSection: some View {
+        if !overdueChores.isEmpty {
+            Section(header: sectionHeader("OVERDUE", count: overdueChores.count, color: .red)) {
+                ForEach(overdueChores) { item in rowView(item) }
+            }
+        }
+        if !comingUpChores.isEmpty {
+            Section(header: sectionHeader("COMING UP", count: comingUpChores.count, color: .blue)) {
+                ForEach(comingUpChores) { item in rowView(item) }
+            }
+        }
+        if !completedChoresLast30.isEmpty || showCompleted {
+            Section(header: completedSectionHeader(count: completedChoresLast30.count)) {
+                if showCompleted {
+                    ForEach(completedChoresLast30) { item in rowView(item) }
+                }
+            }
+        }
+        if overdueChores.isEmpty && comingUpChores.isEmpty {
+            emptyState("No chores", icon: "checkmark.circle")
+        }
+    }
+
+    // MARK: - Repairs section
+
+    @ViewBuilder
+    private var repairsSection: some View {
         if !overdueRepairs.isEmpty {
             Section(header: sectionHeader("OVERDUE", count: overdueRepairs.count, color: .red)) {
                 ForEach(overdueRepairs) { item in rowView(item) }
@@ -205,7 +353,6 @@ struct MaintenanceListView: View {
                 ForEach(scheduledRepairs) { item in rowView(item) }
             }
         }
-        // Completed (last 30 days) — with inline toggle
         if !completedRepairsLast30.isEmpty || showCompleted {
             Section(header: completedSectionHeader(count: completedRepairsLast30.count)) {
                 if showCompleted {
@@ -218,10 +365,10 @@ struct MaintenanceListView: View {
         }
     }
 
-    // MARK: - Recurring Section
+    // MARK: - Maintenance section
 
     @ViewBuilder
-    private var recurringSection: some View {
+    private var maintenanceSection: some View {
         if !overdueRecurring.isEmpty {
             Section(header: sectionHeader("OVERDUE", count: overdueRecurring.count, color: .red)) {
                 ForEach(overdueRecurring) { item in rowView(item) }
@@ -239,29 +386,27 @@ struct MaintenanceListView: View {
                 }
             }
         }
-        // Completed (last 30 days) — with inline toggle
-        if !completedRecurringLast30.isEmpty || showCompleted {
-            Section(header: completedSectionHeader(count: completedRecurringLast30.count)) {
+        if !completedMaintenanceLast30.isEmpty || showCompleted {
+            Section(header: completedSectionHeader(count: completedMaintenanceLast30.count)) {
                 if showCompleted {
-                    ForEach(completedRecurringLast30) { item in rowView(item) }
+                    ForEach(completedMaintenanceLast30) { item in rowView(item) }
                 }
             }
         }
         if overdueRecurring.isEmpty && upcomingRecurring.isEmpty && laterRecurring.isEmpty {
-            emptyState("No recurring items", icon: "arrow.clockwise")
+            emptyState("No maintenance items", icon: "arrow.clockwise")
         }
     }
 
-    // MARK: - Lifecycle Section
+    // MARK: - Assets section
 
     @ViewBuilder
-    private var lifecycleSection: some View {
-        let lifecycle = filteredItems
-        if lifecycle.isEmpty {
-            emptyState("No lifecycle items", icon: "clock")
+    private var assetsSection: some View {
+        if filteredAssets.isEmpty {
+            emptyState("No assets", icon: "clock")
         } else {
             Section {
-                ForEach(lifecycle) { item in rowView(item) }
+                ForEach(filteredAssets) { item in rowView(item) }
             }
         }
     }
@@ -273,90 +418,117 @@ struct MaintenanceListView: View {
             item: item,
             members: members,
             onComplete: { itemToComplete = item },
+            onReopen: { reopenItem(item) },
             onSchedule: { itemToSchedule = item },
             onEdit: { itemToEdit = item },
-            onDelete: { itemToDelete = item }
+            onDelete: { deleteItem(item) }
         )
-        .listRowBackground(Color(.systemBackground))
+    }
+
+    // MARK: - Actions
+
+    private func deleteItem(_ item: MaintenanceItem) {
+        recentlyDeleted = item
+        items.removeAll { $0.id == item.id }
+        withAnimation(.spring()) { showUndoToast = true }
+        Task {
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            withAnimation { showUndoToast = false; recentlyDeleted = nil }
+        }
+    }
+
+    private func reopenItem(_ item: MaintenanceItem) {
+        if let idx = items.firstIndex(where: { $0.id == item.id }) {
+            if item.itemType == .repair || item.itemType == .chore {
+                items[idx].repairStatus = .open
+                items[idx].lastCompletedAt = nil
+            } else if item.itemType == .maintenance {
+                items[idx].lastCompletedAt = nil
+            }
+        }
+    }
+
+    // MARK: - Undo toast
+
+    private var undoToast: some View {
+        Group {
+            if showUndoToast, let item = recentlyDeleted {
+                HStack {
+                    Text("\"\(item.title)\" deleted")
+                        .font(.subheadline)
+                        .lineLimit(1)
+                    Spacer()
+                    Button("Undo") {
+                        items.append(item)
+                        withAnimation { showUndoToast = false; recentlyDeleted = nil }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(.regularMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .shadow(color: .black.opacity(0.1), radius: 8, x: 0, y: 2)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 96)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
     }
 
     // MARK: - Helpers
 
-    private func categoryFilterChip(_ category: MaintenanceCategory?, label: String) -> some View {
-        Button {
-            selectedCategory = category
-        } label: {
+    private func categoryChip(_ category: MaintenanceCategory?, label: String) -> some View {
+        Button { selectedCategory = category } label: {
             Text(label)
                 .font(.caption.weight(.medium))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 12).padding(.vertical, 6)
                 .background(selectedCategory == category ? Color.accentColor : Color.secondary.opacity(0.1))
                 .foregroundStyle(selectedCategory == category ? Color.white : Color.primary)
                 .clipShape(Capsule())
         }
     }
 
-    private func tabLabel(_ type: MaintenanceItemType) -> String {
-        let count: Int
-        switch type {
-        case .repair: count = items.filter { $0.itemType == .repair && $0.repairStatus != .completed }.count
-        case .recurring: count = items.filter { $0.itemType == .recurring }.count
-        case .lifecycle: count = items.filter { $0.itemType == .lifecycle }.count
-        }
-        return "\(type.displayName) \(count)"
-    }
-
     private func sectionHeader(_ title: String, count: Int, color: Color) -> some View {
         HStack(spacing: 6) {
             Circle().fill(color).frame(width: 8, height: 8)
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(color)
-            Text("·")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text("\(count)")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.primary)
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(color)
+            Text("·").font(.caption).foregroundStyle(.secondary)
+            Text("\(count)").font(.caption.weight(.bold)).foregroundStyle(.primary)
         }
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, -8)
+        .padding(.horizontal, 8)
         .background(Color(.systemBackground))
         .textCase(nil)
     }
 
-    /// Completed section header with inline show/hide toggle
     private func completedSectionHeader(count: Int) -> some View {
         HStack(spacing: 6) {
             Circle().fill(Color.green).frame(width: 8, height: 8)
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 4) {
-                    Text("COMPLETED")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.green)
-                    Text("·")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("\(count)")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.primary)
+                    Text("COMPLETED").font(.caption.weight(.semibold)).foregroundStyle(.green)
+                    Text("·").font(.caption).foregroundStyle(.secondary)
+                    Text("\(count)").font(.caption.weight(.bold)).foregroundStyle(.primary)
                 }
-                Text("last 30 days")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                Text("last 30 days").font(.caption2).foregroundStyle(.secondary)
             }
             Spacer()
             Button {
                 withAnimation { showCompleted.toggle() }
             } label: {
                 Text(showCompleted ? "Hide" : "Show")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(Color.accentColor)
+                    .font(.caption.weight(.medium)).foregroundStyle(Color.accentColor)
             }
             .buttonStyle(.plain)
         }
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, -8)
+        .padding(.horizontal, 8)
         .background(Color(.systemBackground))
         .textCase(nil)
     }
@@ -366,22 +538,17 @@ struct MaintenanceListView: View {
             withAnimation { showLaterSection.toggle() }
         } label: {
             HStack(spacing: 6) {
-                Text("LATER THIS YEAR")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text("·")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("\(laterRecurring.count)")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.primary)
+                Text("LATER THIS YEAR").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text("·").font(.caption).foregroundStyle(.secondary)
+                Text("\(laterRecurring.count)").font(.caption.weight(.bold)).foregroundStyle(.primary)
                 Spacer()
                 Image(systemName: showLaterSection ? "chevron.up" : "chevron.down")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(.secondary)
             }
             .padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, -8)
+            .padding(.horizontal, 8)
             .background(Color(.systemBackground))
         }
         .textCase(nil)
@@ -391,6 +558,7 @@ struct MaintenanceListView: View {
         Section {
             ContentUnavailableView(message, systemImage: icon)
                 .frame(maxWidth: .infinity)
+                .listRowBackground(Color.clear)
         }
     }
 }
