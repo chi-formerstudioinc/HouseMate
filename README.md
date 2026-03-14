@@ -1,6 +1,6 @@
 # HouseMate
 
-An iOS app for couples and roommates to manage their shared household. Covers three core areas: **task and chore management**, **waste and recycling reminders**, and **home maintenance tracking**.
+An iOS app for couples and roommates to manage their shared household. Built around **home maintenance tracking**, a household **dashboard**, and stubs for **Insights** and **Finance** features planned for future phases.
 
 Built with SwiftUI and Supabase as the backend.
 
@@ -8,9 +8,11 @@ Built with SwiftUI and Supabase as the backend.
 
 ## What it does
 
-- **Tasks tab** — create, assign, and complete household chores. Supports recurring tasks (daily/weekly/monthly) that auto-advance on completion. Completion history per task. Live sync across all household members via Supabase Realtime.
-- **Bins tab** — set a weekly bin pickup schedule with A/B rotation support. Per-device local notifications for the night before and morning of pickup.
-- **Maintenance tab** — track home maintenance items (e.g. filter changes, gutter cleaning) with overdue indicators (green/yellow/red) and a log of past completions with optional cost tracking.
+- **Home tab** — dashboard showing summary stats, this week's bin collection (garbage or recycle), open repairs, and upcoming maintenance.
+- **Maintenance tab** — track repairs, recurring maintenance, and lifecycle items with overdue indicators (green/yellow/red), cost tracking, and a full completion log. Three item types: Repairs, Recurring, Lifecycle.
+- **Insights tab** — stub in v1. Planned: repair cost breakdowns, completion rates, per-member stats.
+- **Finance tab** — stub in v1. Planned: mortgage tracking and utility bill tracking with charts.
+- **Bin schedule** — configured in Settings. A/B weekly rotation with per-device local notifications. Surfaced on the dashboard (no dedicated tab).
 - **Onboarding** — sign up/in with email + password. Create a household or join one via an 8-character invite code. Up to 6 members per household.
 
 ---
@@ -36,7 +38,7 @@ Built with SwiftUI and Supabase as the backend.
 
 1. Create a new project at [supabase.com](https://supabase.com)
 2. In the SQL editor, run the full schema from `docs/superpowers/plans/2026-03-12-housemate-foundation.md` → **Task 2, Step 2** (create tables) and **Step 3** (RLS policies)
-3. Enable Realtime on: `tasks`, `bin_schedules`, `maintenance_items`, `maintenance_logs`, `members`, `household_invites`
+3. Enable Realtime on: `bin_schedules`, `maintenance_items`, `maintenance_logs`, `members`, `household_invites`
 4. Go to **Project Settings > API** and copy your Project URL and anon key
 
 ### 2. Secrets file
@@ -77,10 +79,10 @@ Open `HouseMate/HouseMate.xcodeproj` in Xcode, select a simulator, and hit **⌘
 | Branch | Status | Plan |
 |---|---|---|
 | `feature/foundation` | Merged to main | `docs/superpowers/plans/2026-03-12-housemate-foundation.md` |
-| `feature/tasks` | Next up | `docs/superpowers/plans/2026-03-12-housemate-tasks.md` |
-| `feature/bins` | Not started | TBD |
-| `feature/maintenance` | Not started | TBD |
+| `feature/maintenance` | In progress | `docs/superpowers/plans/2026-03-13-housemate-maintenance.md` |
 | `feature/home` | Not started | TBD |
+| `feature/insights` | Not started | TBD (stub) |
+| `feature/finance` | Not started | TBD (stub, future phase) |
 
 Plans use TDD (write failing tests → implement → pass). Each plan has step-by-step tasks with checkboxes. When resuming, check which steps are done by looking at the existing files vs the plan's file structure.
 

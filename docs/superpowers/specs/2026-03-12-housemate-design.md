@@ -6,7 +6,9 @@
 
 ## Overview
 
-HouseMate is an iOS app for couples and roommates to manage their shared household. It covers three core areas: task and chore management, waste and recycling reminders, and home maintenance tracking. The app is built with SwiftUI and Supabase as the backend.
+HouseMate is an iOS app for couples and roommates to manage their shared household. It covers home maintenance tracking (repairs, recurring tasks, and lifecycle items), a household dashboard, insights, and finances. The app is built with SwiftUI and Supabase as the backend.
+
+> **2026-03-13 update:** Chore/task management and the dedicated Bins tab have been removed from v1 scope. The app now has four tabs: Home, Maintenance, Insights, Finance. Bin schedule data and config remain but are surfaced on the dashboard and in Settings only. Insights and Finance tabs are stubs in v1 with content planned for future phases.
 
 ---
 
@@ -43,9 +45,6 @@ All primary keys are `UUID` (PostgreSQL `gen_random_uuid()`). Foreign keys use `
 - `households` — id, name, created_by (auth.users)
 - `members` — id, household_id, user_id (auth.users), display_name
 - `household_invites` — id, household_id, invite_code (unique), is_active, created_by
-- `tasks` — id, household_id, title, category, priority, assigned_to (members), due_date, is_recurring, recurring_interval, is_completed, completed_by (members), completed_at, template_id, created_at, updated_at
-- `task_completion_logs` — id, task_id (CASCADE), completed_by (members), completed_at
-- `task_templates` — id, household_id, title, category, recurring_interval (user-created only; built-in are bundled in app)
 - `bin_schedules` — id, household_id (UNIQUE), pickup_day_of_week, rotation_a, rotation_b, starting_rotation, starting_date, notify_day_before, notify_morning_of, updated_at
 - `maintenance_items` — id, household_id, name, category, interval_days, last_completed_date, notes, template_id, updated_at
 - `maintenance_logs` — id, maintenance_item_id (CASCADE), completed_date, notes, cost
@@ -188,9 +187,9 @@ Built-in maintenance templates are bundled locally. User-created stored in `main
 
 ### Tab Bar (4 tabs)
 1. Home
-2. Tasks
-3. Bins
-4. Maintenance
+2. Maintenance
+3. Insights
+4. Finance
 
 Plus a Settings screen accessible via a profile/gear icon in the Home tab navigation bar.
 
@@ -215,54 +214,12 @@ Plus a Settings screen accessible via a profile/gear icon in the Home tab naviga
 ### Home (Dashboard)
 
 - Greeting: "Good morning, [displayName]"
-- **Today's Tasks card** — tasks assigned to the current user with `dueDate` = today; tap to complete inline. Empty state: "No tasks for today — enjoy your day!"
-- **Next Bin Day card** — days until next pickup + rotation label
-- **Maintenance Due Soon card** — items with yellow or red status
-- **Quick-add FAB** — floating action button opens compact sheet: title, category, optional due date, optional assignee
+- **Summary Stats card** — key household numbers (e.g. items overdue, completed this month). Placeholder for richer Insights content in a future phase.
+- **Bin This Week card** — answers "garbage or recycle?" for the current week's pickup. Taps through to bin schedule config in Settings.
+- **Open Repairs card** — maintenance items of type `repair` that are overdue or unscheduled. Taps through to filtered Maintenance list.
+- **Upcoming Maintenance card** — next few recurring/lifecycle items due soon (yellow/red status). Taps through to Maintenance list.
 
----
-
-### Tasks Tab
-
-**List view:**
-- All household tasks, default sort: overdue first, then by due date ascending, then undated
-- Filter bar: All / Mine / Unassigned / Completed
-- Overdue tasks shown with red indicator
-- Swipe right to complete; swipe left reveals Delete (confirmation: "Delete this task? Its completion history will also be deleted." Cancel / Delete)
-- Tap task → detail
-
-**Task detail:**
-- Title, category, priority, assignee, due date, recurring settings
-- Last 5 completion log entries (date + who completed it)
-- Edit button
-
-**Add/Edit task form:**
-- Title (required), category, priority, assign to member (picker), due date, recurring toggle → interval picker (Daily / Weekly / Monthly)
-
-**Templates:**
-- "Browse Templates" button → sheet grouped by category
-- Built-in templates listed; user-created listed separately
-- Tap → pre-fills Add form
-- Long-press → delete option (user-created only)
-
-**In-app live updates (Supabase Realtime):**
-- When another member completes or creates a task, the list updates in real time (Realtime postgres_changes subscription on `tasks` filtered by `household_id`)
-- No push notification in v1 (deferred to when APNs is available)
-
----
-
-### Bins Tab
-
-- **Current rotation card** — today's date, next rotation, days away
-- **Upcoming pickups list** — next 8 pickup dates with rotation label
-- **Configure Schedule button** → sheet:
-  - Pickup day of week
-  - Rotation A / B labels
-  - Starting rotation + starting date
-  - Notify: day before toggle, morning-of toggle
-  - Save → reschedules local notifications for next 12 months
-
-> Municipality calendar import deferred to a future version.
+> Detailed layout and card behaviour to be designed during the Home tab implementation phase.
 
 ---
 
@@ -303,12 +260,39 @@ Plus a Settings screen accessible via a profile/gear icon in the Home tab naviga
 
 ---
 
+### Insights Tab
+
+Stub in v1 — placeholder screen ("Coming soon").
+
+**Planned future content:**
+- Repair costs and categories over time
+- Maintenance completion rates
+- Per-member breakdowns (who did what)
+- Chore streaks and completion rates (if chore tracking is added in a future phase)
+
+No additional data models required for the stub. The data to power Insights (maintenance logs with costs, completion timestamps, member IDs) is already captured by the Maintenance module.
+
+---
+
+### Finance Tab
+
+Stub in v1 — placeholder screen ("Coming soon"). Full implementation deferred to a dedicated Finance phase.
+
+**Planned future content:**
+- Mortgage tracking: balance, equity, interest rate, loan length, renewal date — with graphs/charts
+- Utility bill tracking: Electricity, Power, City Utilities, Hydro, Internet — monthly entries with interactive charts grouped by category and time period
+
+No data models or DB tables defined until the Finance phase is planned.
+
+---
+
 ### Settings
 
 - Household name (editable)
 - Members list with display names
 - **Invite Member** — shows current invite code with copy/share options; **Regenerate Code** button deactivates old code, creates new one
 - **Member removal** — not supported in v1. Help text: "To leave this household, contact your household admin."
+- **Bin Schedule** — configure pickup day of week, rotation A/B labels, starting rotation + date, notification toggles (day before, morning of). Reschedules local notifications on save.
 - Notification preferences: per-type toggles (bin day before, bin day morning, maintenance due)
 - Your display name (editable)
 
@@ -342,6 +326,10 @@ See Maintenance tab section above.
 
 ## V1 Scope Boundaries (explicitly out of scope)
 
+- Chore / task management — deferred; no Tasks tab in v1
+- Dedicated Bins tab — bin schedule config is in Settings; bin data surfaced on dashboard only
+- Finance features (mortgage, utility tracking) — deferred to Finance phase
+- Insights content (charts, stats, cost breakdowns) — Insights tab is a stub in v1
 - Android support
 - Web companion app
 - Municipality calendar import
